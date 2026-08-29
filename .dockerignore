@@ -1,0 +1,19 @@
+.venv
+__pycache__
+*.pyc
+*.log
+.git
+.gitignore
+tests
+node_modules
+frontend/node_modules
+*.zip
+
+# 项目根目录下的运行时数据（backend/history 是代码，不受影响）
+/history
+/output
+/user_configs
+/data
+
+# DeAI 是 Windows 本地增强工具，不进 Linux Docker 镜像（部署 zip 会包含）
+/deai-image

@@ -1,0 +1,76 @@
+# ===== 敏感配置（含 API Key，切勿提交）=====
+image_providers.yaml
+text_providers.yaml
+user_configs/
+
+# ===== 运行时数据（用户生成内容 / 数据库 / 输出）=====
+history/
+output/
+data/
+*.sqlite3
+*.db
+
+# ===== Python / Django =====
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+.mypy_cache/
+.pyre_cache/
+staticfiles/
+media/
+
+# ===== 前端 / Node =====
+node_modules/
+frontend/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ===== 部署/打包产物 =====
+ideagen_deploy.zip
+
+# ===== 环境变量 =====
+.env
+.env.*
+!.env.example
+
+# ===== 日志 =====
+*.log
+
+# ===== 编辑器 / IDE =====
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ===== 操作系统文件 =====
+.DS_Store
+Thumbs.db
+desktop.ini
