@@ -412,8 +412,7 @@ export const useGeneratorStore = defineStore('generator', {
         }
       }
       this.syncImageProgress()
-      this.progress.status = this.images.length > 0
-        && this.images.every(img => img.status === 'done') ? 'done' : 'error'
+      this.progress.status = 'error'
       this.stage = 'outline'
     },
 
@@ -464,6 +463,9 @@ export const useGeneratorStore = defineStore('generator', {
     finishGeneration(taskId: string) {
       this.taskId = taskId
       this.stopGeneration('图片生成未完成')
+      if (this.images.length > 0 && this.images.every(img => img.status === 'done')) {
+        this.progress.status = 'done'
+      }
       this.stage = this.progress.status === 'done' ? 'result' : 'outline'
     },
 
