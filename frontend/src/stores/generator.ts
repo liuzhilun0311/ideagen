@@ -393,6 +393,29 @@ export const useGeneratorStore = defineStore('generator', {
       }))
     },
 
+    syncImageProgress() {
+      this.progress.current = this.images.filter(img => img.status === 'done').length
+      this.progress.total = this.images.length
+      // 批量生成需等待 finish；单图重绘则同步更新已结束任务的状态。
+      if (this.progress.status !== 'generating') {
+        this.progress.status = this.images.length === 0 ? 'idle'
+          : this.progress.current === this.progress.total ? 'done' : 'error'
+      }
+    },
+
+    stopGeneration(message: string) {
+      for (const image of this.images) {
+        if (image.status === 'generating' || image.status === 'retrying') {
+          image.status = 'error'
+          image.error = message
+          image.retryable = true
+        }
+      }
+      this.syncImageProgress()
+      this.progress.status = this.images.length > 0
+        && this.images.every(img => img.status === 'done') ? 'done' : 'error'
+      this.stage = 'outline'
+    },
 
     /**
      * 更新图片生成进度
@@ -403,15 +426,17 @@ export const useGeneratorStore = defineStore('generator', {
      */
     updateProgress(index: number, status: 'generating' | 'done' | 'error', url?: string, error?: string) {
       const image = this.images.find(img => img.index === index)
-      if (image) {
-        image.status = status
-        if (url) image.url = withToken(url)
-        if (error) image.error = error
-      }
-      // 成功完成时增加计数
+      if (!image) return
+      image.status = status
+      if (url) image.url = withToken(url)
       if (status === 'done') {
-        this.progress.current++
+        delete image.error
+        delete image.retryable
+      } else if (status === 'error') {
+        image.error = error || '图片生成失败'
+        image.retryable = true
       }
+      this.syncImageProgress()
     },
 
 
@@ -422,18 +447,13 @@ export const useGeneratorStore = defineStore('generator', {
      */
     updateImage(index: number, newUrl: string) {
       const image = this.images.find(img => img.index === index)
-      if (image) {
-        const wasDone = image.status === 'done'
-        // 添加 token（<img> 无法带请求头）并加时间戳避免缓存
-        const tokenUrl = withToken(newUrl)
-        const timestamp = Date.now()
-        image.url = `${tokenUrl}${tokenUrl.includes('?') ? '&' : '?'}t=${timestamp}`
-        image.status = 'done'
-        delete image.error
-        if (!wasDone && this.progress.current < this.progress.total) {
-          this.progress.current++
-        }
-      }
+      if (!image) return
+      const tokenUrl = withToken(newUrl)
+      image.url = `${tokenUrl}${tokenUrl.includes('?') ? '&' : '?'}t=${Date.now()}`
+      image.status = 'done'
+      delete image.error
+      delete image.retryable
+      this.syncImageProgress()
     },
 
 
@@ -443,17 +463,8 @@ export const useGeneratorStore = defineStore('generator', {
      */
     finishGeneration(taskId: string) {
       this.taskId = taskId
-      this.stage = 'result'
-      this.progress.status = 'done'
-      // 生成已结束：仍停留在"生成中/重试中"的图片（如 SSE 中断未收到 error 事件）按失败处理，
-      // 保证失败计数与实际一致
-      this.images.forEach(img => {
-        if (img.status === 'generating' || img.status === 'retrying') {
-          img.status = 'error'
-          img.error = img.error || '图片生成未完成'
-          img.retryable = true
-        }
-      })
+      this.stopGeneration('图片生成未完成')
+      this.stage = this.progress.status === 'done' ? 'result' : 'outline'
     },
 
 
@@ -463,9 +474,10 @@ export const useGeneratorStore = defineStore('generator', {
      */
     setImageRetrying(index: number) {
       const image = this.images.find(img => img.index === index)
-      if (image) {
-        image.status = 'retrying'
-      }
+      if (!image) return
+      image.status = 'retrying'
+      delete image.error
+      this.syncImageProgress()
     },
 
 
