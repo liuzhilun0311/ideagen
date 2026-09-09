@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import { ref } from 'vue'
+import { nextTick, ref } from 'vue'
 
 const actions = vi.hoisted(() => ({
   outlineStart: vi.fn(),
@@ -38,6 +38,7 @@ import { createHistory, updateHistory } from '../../src/api/history'
 import { useStudio } from '../../src/composables/useStudio'
 import { inspirations } from '../../src/features/templates/catalog'
 import { useGeneratorStore } from '../../src/stores/generator'
+import { useStudioSession } from '../../src/stores/studioSession'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -92,6 +93,60 @@ beforeEach(async () => {
 })
 
 describe('studio generation', () => {
+  it('keeps shared task ownership until background content finishes', async () => {
+    const generated = deferred<ContentResponse>()
+    vi.mocked(generateContent).mockReturnValue(generated.promise)
+    const session = useStudioSession()
+    const pending = studio.run('content')
+    expect(session.busy).toBe(true)
+    expect(session.replaceDraft()).toBe(false)
+    await vi.waitFor(() => expect(generateContent).toHaveBeenCalledOnce())
+    generated.resolve(content)
+    await pending
+    expect(session.busy).toBe(false)
+    expect(session.notice).toBe('文案已生成')
+    expect(session.dirty).toBe(true)
+  })
+
+  it('does not start a workspace operation while the home composer owns a task', async () => {
+    useStudioSession().homeBusy = true
+    await studio.run('content')
+    expect(generateContent).not.toHaveBeenCalled()
+    expect(createHistory).not.toHaveBeenCalled()
+  })
+
+  it('synchronizes unsaved edits without a navigation action', async () => {
+    await studio.save()
+    expect(useStudioSession().dirty).toBe(false)
+    studio.store.updatePage(0, 'Edit retained while browsing another module')
+    expect(useStudioSession().dirty).toBe(true)
+  })
+
+  it('restores dirty protection after replacing an already-dirty record', async () => {
+    const session = useStudioSession()
+    expect(session.dirty).toBe(true)
+    session.replaceDraft()
+    studio.store.setRecordId('different-record')
+    studio.store.setOutline('Other', [{ index: 0, type: 'cover', content: 'Other' }])
+    await nextTick()
+    expect(session.dirty).toBe(true)
+    studio.store.updatePage(0, 'Another edit')
+    expect(session.dirty).toBe(true)
+  })
+
+  it.each(['content', 'images'] as const)('captures %s model choices before awaiting a save', async kind => {
+    const saved = deferred<{ success: boolean }>()
+    vi.mocked(updateHistory).mockReturnValue(saved.promise)
+    const pending = studio.run(kind)
+    await vi.waitFor(() => expect(updateHistory).toHaveBeenCalledOnce())
+    studio.store.contentModelName = 'late-config'
+    studio.store.imageModelName = 'late-config'
+    saved.resolve({ success: true })
+    await pending
+    if (kind === 'content') expect(vi.mocked(generateContent).mock.calls[0][4]).toBe('text')
+    else expect(actions.imageStart).toHaveBeenCalledWith(true, expect.objectContaining({ imageModelName: 'image' }))
+  })
+
   it.each(['images', 'content'] as const)('does not generate %s when record creation fails', async kind => {
     vi.mocked(createHistory).mockResolvedValue({ success: false, error: 'Creation failed' })
     await studio.run(kind)
@@ -124,7 +179,7 @@ describe('studio generation', () => {
     expect(actions.imageStart).not.toHaveBeenCalled()
     saved.resolve({ success: true })
     await pending
-    if (kind === 'images') expect(actions.imageStart).toHaveBeenCalledWith(true)
+    if (kind === 'images') expect(actions.imageStart).toHaveBeenCalledWith(true, expect.objectContaining({ imageModelName: 'image' }))
     else {
       expect(generateContent).toHaveBeenCalledWith('City walk', 'Cover', '', expect.any(AbortSignal), 'text')
       expect(studio.store.content).toMatchObject({

@@ -2,11 +2,13 @@ import { computed, ref } from 'vue'
 import { useGeneratorStore } from '../stores/generator'
 import { createHistory, updateHistory } from '../api/history'
 import { normalizeApiError, type AppError } from '../utils/errors'
+import { useStudioSession } from '../stores/studioSession'
 
 const confirmedSnapshots = new WeakMap<object, { recordId: string; payload: string }>()
 
 export function useDraftSave() {
   const store = useGeneratorStore()
+  const session = useStudioSession()
   const saving = ref(false)
   const error = ref<AppError | null>(null)
   const snapshot = () => ({
@@ -26,6 +28,7 @@ export function useDraftSave() {
 
   function save(): Promise<boolean> {
     if (pending) return pending
+    const revision = session.revision
     const payload = snapshot()
     saving.value = true
     error.value = null
@@ -41,10 +44,12 @@ export function useDraftSave() {
             throw created.error || created.error_message || '创建作品记录失败'
           }
           recordId = created.record_id
+          if (session.revision !== revision) return false
           store.setRecordId(recordId)
         }
         const updated = await updateHistory(recordId, payload)
         if (!updated.success) throw updated.error || updated.error_message || '保存失败'
+        if (session.revision !== revision || store.recordId !== recordId) return false
         // Only the sent snapshot is saved; later edits must remain dirty.
         saved.value = JSON.stringify(payload)
         confirmedSnapshots.set(store, { recordId, payload: saved.value })
@@ -60,5 +65,10 @@ export function useDraftSave() {
     return pending
   }
 
-  return { saving, error, dirty, save }
+  function resetBaseline() {
+    saved.value = null
+    error.value = null
+  }
+
+  return { saving, error, dirty, save, resetBaseline }
 }

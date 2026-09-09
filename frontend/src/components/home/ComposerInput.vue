@@ -7,7 +7,7 @@
       class="field topic-input"
       placeholder="例如：上海周末城市漫步，沿途的建筑、街角咖啡与拍照地点"
       rows="5"
-      :disabled="loading"
+      :disabled="loading || locked"
       @input="emit('update:modelValue', ($event.target as HTMLTextAreaElement).value)"
       @compositionstart="composing = true"
       @compositionend="composing = false"
@@ -24,7 +24,7 @@
             class="field reference-input"
             rows="3"
             placeholder="参考资料、产品卖点或文案素材"
-            :disabled="loading"
+            :disabled="loading || locked"
             @input="emit('update:referenceContent', ($event.target as HTMLTextAreaElement).value)"
           />
         </div>
@@ -38,7 +38,7 @@
             accept="image/jpeg,image/png,image/webp"
             multiple
             :aria-describedby="imageError ? 'image-limits image-error' : 'image-limits'"
-            :disabled="loading || uploadedImages.length >= 5"
+            :disabled="loading || locked || uploadedImages.length >= 5"
             @change="handleImageUpload"
           />
           <p v-if="imageError" id="image-error" class="input-error" role="alert">{{ imageError }}</p>
@@ -52,7 +52,7 @@
                   class="icon-button"
                   :aria-label="`移除参考图片 ${image.file.name}`"
                   :title="`移除 ${image.file.name}`"
-                  :disabled="loading"
+                  :disabled="loading || locked"
                   @click="removeImage(index)"
                 ><X :size="18" aria-hidden="true" /></button>
               </div>
@@ -95,6 +95,7 @@ const props = withDefaults(defineProps<{
   referenceContent?: string
   images?: File[]
   disabled?: boolean
+  locked?: boolean
 }>(), { buttonText: '生成大纲', referenceContent: '', disabled: false, cancelling: false })
 const emit = defineEmits<{
   (e: 'update:modelValue', value: string): void
@@ -127,7 +128,7 @@ watch(() => props.images, files => {
 
 function handleImageUpload(event: Event) {
   const input = event.target as HTMLInputElement
-  if (props.loading) { input.value = ''; return }
+  if (props.loading || props.locked) { input.value = ''; return }
   const files = uploadedImages.value.map(image => image.file)
   const errors: string[] = []
   for (const file of Array.from(input.files || [])) {

@@ -1,18 +1,20 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { onBeforeRouteLeave, useRouter } from 'vue-router'
-import { ArrowLeft, Check, Eye, Save, ListTree, SlidersHorizontal, PencilLine, FileText, Image, Download } from 'lucide-vue-next'
+import { computed, onActivated, onDeactivated, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ArrowLeft, Check, Eye, Save, ListTree, SlidersHorizontal, PencilLine, FileText, Image, Download, Square, Plus } from 'lucide-vue-next'
 import PageList from '../components/workspace/PageList.vue'
 import PageEditor from '../components/workspace/PageEditor.vue'
 import GenerationPanel from '../components/workspace/GenerationPanel.vue'
 import ImageViewer from '../components/common/ImageViewer.vue'
 import ErrorCard from '../components/common/ErrorCard.vue'
 import { useStudio } from '../composables/useStudio'
-import { normalizeApiError } from '../utils/errors'
+import { useStudioSession } from '../stores/studioSession'
 
 defineOptions({ name: 'WorkspaceView' })
 const router = useRouter()
+const route = useRoute()
 const studio = useStudio()
+const session = useStudioSession()
 const { store, error, phase, busy, cancelling, editingLocked } = studio
 const { saving, dirty } = studio.saver
 const selected = ref(0)
@@ -24,6 +26,22 @@ const structureLocked = computed(() => busy.value || store.images.length > 0)
 const viewer = ref('')
 const optionState = studio.options
 const { textModels, imageModels, prompts } = optionState
+const controlsBusy = computed(() => session.busy || optionState.loading.value || !!optionState.error.value)
+const canGenerateCopy = computed(() => !controlsBusy.value && textModels.value.some(model => model.name === store.contentModelName))
+const canGenerateImages = computed(() => !controlsBusy.value && imageModels.value.some(model => model.name === store.imageModelName))
+async function generateCopy() {
+  if (!canGenerateCopy.value) return
+  editorTab.value = 'copy'
+  mobilePanel.value = 'editor'
+  await studio.run('content')
+}
+async function newCreation() {
+  if (session.busy) return
+  if ((dirty.value || store.outline.pages.length) && !window.confirm('开始新创作会替换当前工作台，是否继续？')) return
+  if (!session.replaceDraft()) return
+  store.reset()
+  await router.push('/')
+}
 const titles = computed({
   get: () => store.content.titles.join('\n'),
   set: value => { store.content.titles = value.split('\n'); store.content.status = 'done' },
@@ -35,6 +53,12 @@ const tags = computed({
 
 watch(() => store.outline.pages.length, length => {
   selected.value = Math.max(0, Math.min(selected.value, length - 1))
+})
+watch(() => session.revision, () => {
+  selected.value = 0
+  editorTab.value = 'page'
+  mobilePanel.value = 'editor'
+  viewer.value = ''
 })
 
 function selectPage(index: number) {
@@ -61,7 +85,10 @@ function openOriginal(src: string) {
 }
 async function preview() {
   if (busy.value || !store.images.some(image => image.status === 'done')) return
-  if (await studio.save()) await router.push('/result')
+  const revision = session.revision
+  if (await studio.save() && visible && route.path === '/workspace' && revision === session.revision) {
+    await router.push('/result')
+  }
 }
 function exportOutline() {
   const blob = new Blob([JSON.stringify(store.outline, null, 2)], { type: 'application/json' })
@@ -72,33 +99,26 @@ function exportOutline() {
   link.click()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
-function beforeUnload(event: BeforeUnloadEvent) {
-  if (busy.value || dirty.value) {
-    event.preventDefault()
-    event.returnValue = ''
-  }
+let visible = false
+async function refreshOptions() {
+  if (session.busy || optionState.loading.value) return
+  await optionState.load()
+  if (optionState.error.value) error.value = optionState.error.value
 }
-onBeforeRouteLeave(() => {
-  if (busy.value) {
-    error.value = normalizeApiError('当前任务尚未结束，请先取消或等待完成', '创作进行中')
-    return false
-  }
-  return !dirty.value || window.confirm('尚有未保存到服务器的修改，确定离开？')
-})
-onMounted(async () => {
-  window.addEventListener('beforeunload', beforeUnload)
-  if (!store.outline.pages.length) {
-    await router.replace('/')
-    return
-  }
+onMounted(() => {
   // Persisted running flags do not imply a live request after a reload.
   if (store.progress.status === 'generating') store.stopGeneration('上次连接已中断')
   if (store.content.status === 'generating') store.setContentError('上次文案生成已中断')
   if (store.outlineStatus === 'generating') store.setOutlineStatus('idle')
-  await optionState.load()
-  if (optionState.error.value) error.value = optionState.error.value
 })
-onUnmounted(() => window.removeEventListener('beforeunload', beforeUnload))
+onActivated(() => {
+  visible = true
+  void refreshOptions()
+})
+onDeactivated(() => { visible = false; viewer.value = '' })
+watch([() => session.busy, optionState.loading, optionState.refreshNeeded], ([isBusy, isLoading, needsRefresh], previous) => {
+  if (!isBusy && !isLoading && visible && (needsRefresh || previous[0])) void refreshOptions()
+})
 </script>
 
 <template>
@@ -111,11 +131,23 @@ onUnmounted(() => window.removeEventListener('beforeunload', beforeUnload))
       </div>
       <div class="studio-controls">
         <span class="save-state" role="status"><Check v-if="!dirty && !saving" :size="14" />{{ saving ? '正在保存' : dirty ? '有未保存的修改' : '已保存' }}</span>
-        <button class="icon-button" title="导出大纲" aria-label="导出大纲" :disabled="!store.outline.pages.length" @click="exportOutline"><Download :size="17" /></button>
+        <button class="icon-button export-button" title="导出大纲" aria-label="导出大纲" :disabled="!store.outline.pages.length" @click="exportOutline"><Download :size="17" /></button>
+        <button class="icon-button" title="新建创作" aria-label="新建创作" :disabled="session.busy" @click="newCreation"><Plus :size="18" /></button>
         <button class="btn btn-secondary" :disabled="busy" @click="studio.save"><Save :size="16" /><span>保存</span></button>
         <button class="btn btn-primary" :disabled="busy || !store.images.some(image => image.status === 'done')" @click="preview"><Eye :size="16" /><span>预览作品</span></button>
       </div>
     </header>
+    <section class="creation-actions" aria-label="创作操作">
+      <button class="btn btn-primary copy-action" :disabled="!canGenerateCopy" @click="generateCopy">
+        <FileText :size="20" />{{ phase === 'content' ? '正在生成文案' : '生成文案' }}
+      </button>
+      <button class="btn btn-secondary image-action" :disabled="!canGenerateImages" @click="studio.run('images')">
+        <Image :size="20" />{{ phase === 'images' ? '正在生成图片' : '生成图片' }}
+      </button>
+      <button v-if="phase && phase !== 'retry'" class="btn btn-secondary cancel-action" :disabled="cancelling" @click="studio.cancel">
+        <Square :size="16" />{{ cancelling ? '正在取消' : '取消生成' }}
+      </button>
+    </section>
     <ErrorCard v-if="error" :error="error" dismissible @dismiss="error = null" />
     <div class="studio-grid">
       <PageList :pages="store.outline.pages" :images="store.images" :selected="selected" :locked="structureLocked"
@@ -133,7 +165,10 @@ onUnmounted(() => window.removeEventListener('beforeunload', beforeUnload))
           @update="current && store.updatePage(current.index, $event)"
           @retry="current && studio.retryPage(current.index)" @preview="openOriginal" />
         <section v-else class="copy-editor" aria-label="整套发布文案">
-          <h2>发布文案</h2>
+          <div class="copy-heading">
+            <h2>发布文案</h2>
+            <button class="btn btn-primary" :disabled="!canGenerateCopy" @click="generateCopy"><FileText :size="17" />{{ store.content.copywriting ? '重新生成文案' : '生成文案' }}</button>
+          </div>
           <p v-if="store.content.status === 'generating'" role="status">正在生成文案</p>
           <p v-if="store.content.error" class="copy-error" role="alert">{{ store.content.error }}</p>
           <label for="copy-titles">标题备选</label>
@@ -146,8 +181,8 @@ onUnmounted(() => window.removeEventListener('beforeunload', beforeUnload))
         </section>
       </section>
       <GenerationPanel :text-models="textModels" :image-models="imageModels" :prompts="prompts"
-        :busy="busy || optionState.loading.value" :phase="phase" :cancelling="cancelling"
-        :class="{ 'mobile-hidden': mobilePanel !== 'tools' }" @run="studio.run" @cancel="studio.cancel" />
+        :busy="controlsBusy" :phase="phase" :cancelling="cancelling"
+        :class="{ 'mobile-hidden': mobilePanel !== 'tools' }" @run="$event === 'content' ? generateCopy() : studio.run($event)" @cancel="studio.cancel" />
     </div>
     <nav class="studio-mobile-nav" aria-label="工作台分区">
       <button :aria-pressed="mobilePanel === 'structure'" @click="mobilePanel = 'structure'"><ListTree :size="19" />结构</button>
@@ -160,6 +195,11 @@ onUnmounted(() => window.removeEventListener('beforeunload', beforeUnload))
 
 <style scoped>
 .studio { max-width:1440px; width:100%; margin:0 auto; }
+.creation-actions { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:20px; padding:16px 0; border-block:1px solid var(--border-color); }
+.creation-actions .btn { min-height:48px; font-size:16px; padding:0 24px; }
+.image-action { border-color:var(--primary); color:var(--primary); }
+.copy-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:20px; }
+.copy-heading h2 { margin:0; }
 .studio-header { display:flex; align-items:center; justify-content:space-between; gap:20px; margin-bottom:24px; }
 .studio-heading { display:flex; gap:12px; align-items:center; min-width:0; }
 .studio-heading>div { min-width:0; }
@@ -186,13 +226,16 @@ h1 { font-size:21px; font-weight:650; line-height:1.5; overflow-wrap:anywhere; m
   .save-state { display:none; }
 }
 @media(max-width:700px) {
+  .creation-actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; padding:12px 0; }
+  .creation-actions .btn { width:100%; padding:0 8px; font-size:15px; }
+  .cancel-action { grid-column:1/-1; }
   .studio { padding-bottom:84px; }
   .studio-header { flex-direction:column; align-items:stretch; gap:16px; margin-bottom:18px; }
   .studio-heading { gap:8px; }
   h1 { font-size:19px; }
   .studio-controls { justify-content:flex-end; flex-wrap:wrap; gap:7px; }
   .save-state { margin-right:auto; font-size:11px; }
-  .studio-controls>.icon-button { display:none; }
+  .studio-controls>.export-button { display:none; }
   .studio-controls .btn { padding:0 11px; }
   .studio-grid { display:block; min-height:600px; }
   .mobile-hidden { display:none !important; }

@@ -9,6 +9,7 @@ vi.mock('../../src/api/history', () => ({
 import { createHistory, updateHistory } from '../../src/api/history'
 import { useGeneratorStore } from '../../src/stores/generator'
 import { useDraftSave } from '../../src/composables/useDraftSave'
+import { useStudioSession } from '../../src/stores/studioSession'
 
 beforeEach(() => {
   setActivePinia(createPinia())
@@ -91,4 +92,27 @@ it('does not reuse confirmation for a different record', async () => {
   await useDraftSave().save()
   useGeneratorStore().setRecordId('another')
   expect(useDraftSave().dirty.value).toBe(true)
+})
+
+it('invalidates the cached workspace save baseline when replacing a draft', async () => {
+  const saver = useDraftSave()
+  await saver.save()
+  saver.resetBaseline()
+  expect(saver.dirty.value).toBe(true)
+})
+
+it('does not mark a replacement draft saved when an older save completes', async () => {
+  const store = useGeneratorStore()
+  store.setRecordId('old')
+  let finish!: (result: { success: boolean }) => void
+  vi.mocked(updateHistory).mockReturnValue(new Promise(resolve => { finish = resolve }))
+  const saver = useDraftSave()
+  const save = saver.save()
+  useStudioSession().replaceDraft()
+  store.setRecordId('new')
+  store.updatePage(0, 'New draft')
+  finish({ success: true })
+  expect(await save).toBe(false)
+  expect(store.recordId).toBe('new')
+  expect(saver.dirty.value).toBe(true)
 })

@@ -10,7 +10,7 @@
         <button
           class="btn btn-secondary btn-small"
           @click="handleScanAll"
-          :disabled="isScanning"
+          :disabled="isScanning || session.busy"
         >
           <svg v-if="!isScanning" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
           <div v-else class="spinner-small" style="margin-right: 6px;"></div>
@@ -170,7 +170,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, onActivated } from 'vue'
+import { ref, watch, onMounted, onActivated, onDeactivated, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import {
   getHistoryList,
@@ -183,6 +183,8 @@ import {
   scanAllTasks
 } from '../api'
 import { useGeneratorStore } from '../stores/generator'
+import { useStudioSession } from '../stores/studioSession'
+import { useHistoryDraft } from '../composables/useHistoryDraft'
 import { runDeaiDownload, downloadAsZip } from '../composables/useDeaiDownload'
 
 // 引入组件
@@ -191,11 +193,15 @@ import GalleryCard from '../components/history/GalleryCard.vue'
 import ImageGalleryModal from '../components/history/ImageGalleryModal.vue'
 import OutlineModal from '../components/history/OutlineModal.vue'
 import ErrorCard from '../components/common/ErrorCard.vue'
-import { normalizeApiError, type AppError } from '../utils/errors'
+import { normalizeApiError } from '../utils/errors'
 
 const router = useRouter()
 const route = useRoute()
 const store = useGeneratorStore()
+const session = useStudioSession()
+const historyDraft = useHistoryDraft(router)
+onDeactivated(historyDraft.cancelPending)
+onBeforeUnmount(historyDraft.cancelPending)
 
 // 数据状态
 const records = ref<HistoryRecord[]>([])
@@ -213,7 +219,7 @@ watch(currentPage, (v) => { pageInput.value = v })
 const viewingRecord = ref<any>(null)
 const showOutlineModal = ref(false)
 const isScanning = ref(false)
-const error = ref<AppError | null>(null)
+const error = historyDraft.error
 const successMessage = ref('')
 
 // 下载状态
@@ -298,45 +304,22 @@ async function handleSearch() {
  * 加载记录并跳转到编辑页
  */
 async function loadRecord(id: string) {
-  const res = await getHistory(id)
-  if (res.success && res.record) {
-    store.setTopic(res.record.title)
-    store.setOutline(res.record.outline.raw, res.record.outline.pages)
-    store.setRecordId(res.record.id)
-    // 恢复已生成的文案（标题/文案/标签）
-    const rc = res.record.content
-    if (rc && ((rc.titles && rc.titles.length) || rc.copywriting)) {
-      store.setContent(rc.titles || [], rc.copywriting || '', rc.tags || [])
-    }
-    const generated = res.record.images.generated || []
-    if (generated.some(Boolean)) {
-      store.taskId = res.record.images.task_id
-      store.images = res.record.outline.pages.map((page, idx) => {
-        const filename = generated[page.index] || generated[idx] || ''
-        return {
-          index: page.index,
-          url: filename ? getImageUrl(res.record!.images.task_id || '', filename, false) : '',
-          status: filename ? 'done' : 'error',
-          retryable: !filename
-        }
-      })
-    }
-    store.setEntrySource('history')
-    router.push('/outline')
-  } else {
-    error.value = normalizeApiError(res.error || res.error_message || '打开历史记录失败', '打开历史记录失败')
-  }
+  if (await historyDraft.loadRecord(id)) closeGallery()
 }
 
 /**
  * 查看图片
  */
 async function viewImages(id: string) {
-  const res = await getHistory(id)
-  if (res.success) {
-    viewingRecord.value = res.record
-  } else {
-    error.value = normalizeApiError(res.error || res.error_message || '查看图片失败', '查看图片失败')
+  try {
+    const res = await getHistory(id)
+    if (res.success && res.record) {
+      viewingRecord.value = res.record
+    } else {
+      error.value = normalizeApiError(res.error || res.error_message || '查看图片失败', '查看图片失败')
+    }
+  } catch (cause) {
+    error.value = normalizeApiError(cause, '查看图片失败')
   }
 }
 
@@ -352,13 +335,25 @@ function closeGallery() {
  * 确认删除
  */
 async function confirmDelete(record: any) {
-  if(confirm('确定删除吗？')) {
-    const result = await deleteHistory(record.id)
-    if (result.success) {
-      loadData()
-      loadStats()
-    } else {
-      error.value = normalizeApiError(result.error || result.error_message || '删除历史记录失败', '删除历史记录失败')
+  if (record.id === store.recordId) {
+    error.value = normalizeApiError('此作品正在创作区编辑，请先切换到另一份草稿再删除。', '无法删除当前作品')
+    return
+  }
+  if (confirm('确定删除吗？')) {
+    if (record.id === store.recordId) {
+      error.value = normalizeApiError('此作品正在创作区编辑，请先切换到另一份草稿再删除。', '无法删除当前作品')
+      return
+    }
+    try {
+      const result = await deleteHistory(record.id)
+      if (result.success) {
+        loadData()
+        loadStats()
+      } else {
+        error.value = normalizeApiError(result.error || result.error_message || '删除历史记录失败', '删除历史记录失败')
+      }
+    } catch (cause) {
+      error.value = normalizeApiError(cause, '删除历史记录失败')
     }
   }
 }
@@ -469,6 +464,7 @@ async function handleDownload(id: string) {
  * 扫描所有任务并同步
  */
 async function handleScanAll() {
+  if (session.busy || isScanning.value) return
   isScanning.value = true
   try {
     const result = await scanAllTasks()
@@ -506,6 +502,7 @@ onMounted(async () => {
   }
 
   // 自动执行一次扫描（静默，不显示结果）
+  if (session.busy || isScanning.value) return
   try {
     const result = await scanAllTasks()
     if (result.success && (result.synced || 0) > 0) {

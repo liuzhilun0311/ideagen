@@ -1,7 +1,11 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import axios, { type AxiosResponse } from 'axios'
+import axios from 'axios'
+import {
+  createPreviewFixtures, previewCopy as copy, previewDelay, previewImageUrl,
+  previewPages as pages, previewPhotos as photos, previewRecord as record, previewUser,
+} from './fixtures'
 import '../../src/assets/css/variables.css'
 import '../../src/assets/css/base.css'
 import '../../src/assets/css/components.css'
@@ -22,72 +26,39 @@ const previewStorage: Storage = {
 }
 Object.defineProperty(window, 'localStorage', { value: previewStorage, configurable: true })
 memory.set('ideagen_token', 'local-preview-not-a-real-token')
-memory.set('ideagen_user', JSON.stringify({ id: 'preview-user', username: '开发预览', is_admin: false }))
+memory.set('ideagen_user', JSON.stringify(previewUser))
 
-const pages = [
-  { index: 0, type: 'cover' as const, content: '把周末，留给城市的一角\n不赶路的城市漫步\n街道、咖啡和那些不经意的美好。' },
-  { index: 1, type: 'content' as const, content: '在街角喝一杯咖啡\n选一家有窗边座位的小店，留一点时间观察街上的人。' },
-  { index: 2, type: 'summary' as const, content: '把一点绿色带回家\n散步的终点，是属于自己的生活节奏。' },
-]
-const photos = ['/assets/inspiration/city.jpg', '/assets/inspiration/coffee.jpg', '/assets/inspiration/plants.jpg']
-const copy = {
-  titles: ['周末不赶路，去城市里慢慢走', '一场没有目的地的城市漫步'],
-  copywriting: '关掉导航，走进一条还没去过的小巷。\n\n在街角喝一杯咖啡，经过花店时停下来。原来周末的好心情，不一定需要一张远行的车票。\n\n把时间留给自己，也留给生活里那些不起眼的小事。',
-  tags: ['城市漫步', '周末日常', '生活记录'],
-}
-let record = {
-  id: 'preview-record', title: '周末城市漫步图文', created_at: '2026-09-09 10:00:00',
-  updated_at: '2026-09-09 10:00:00', outline: { raw: pages.map(page => page.content).join('\n\n<page>\n\n'), pages },
-  content: copy, images: { task_id: 'preview-task', generated: ['0.png', '1.png', '2.png'] },
-  status: 'completed', thumbnail: photos[0],
-}
+const fixtures = createPreviewFixtures(previewDelay(location.search))
+axios.defaults.adapter = fixtures.adapter
 
-axios.defaults.adapter = async config => {
-  const path = (config.url || '').split('?')[0]
-  const data = typeof config.data === 'string' ? JSON.parse(config.data) : config.data
-  let result: object = { success: true }
-  if (path === '/api/config') {
-    result = { success: true, config: {
-      text_generation: { active_provider: 'preview-text', providers: { 'preview-text': { enabled: true, display_name: '演示文本模型' } } },
-      image_generation: { active_provider: 'preview-image', providers: { 'preview-image': { enabled: true, display_name: '演示图片模型' } } },
-    } }
-  } else if (path === '/api/prompts') {
-    result = { success: true, prompts: { outline: [], content: [], image: [] } }
-  } else if (path === '/api/outline') {
-    result = { success: true, outline: record.outline.raw, pages }
-  } else if (path === '/api/content') {
-    result = { success: true, ...copy }
-  } else if (path === '/api/regenerate') {
-    result = { success: true, index: data.page.index, image_url: photos[data.page.index % photos.length] }
-  } else if (path === '/api/history' && config.method === 'post') {
-    record = { ...record, title: data.topic, outline: data.outline }
-    result = { success: true, record_id: record.id }
-  } else if (path === '/api/history/preview-record' && config.method === 'put') {
-    record = { ...record, ...data }
-  } else if (path === '/api/history/preview-record') {
-    result = { success: true, record }
-  } else if (path === '/api/history/stats') {
-    result = { success: true, total: 1, by_status: { completed: 1 } }
-  } else if (path === '/api/history' || path === '/api/history/search') {
-    result = { success: true, records: [{ ...record, page_count: 3 }], total: 1, page: 1, page_size: 20, total_pages: 1 }
+// Intercept before assigning a URL so <img> never requests the real image API.
+// This shim exists only in the dev-preview document, not production URL helpers.
+for (const [prototype, property] of [
+  [HTMLImageElement.prototype, 'src'], [HTMLAnchorElement.prototype, 'href'],
+] as const) {
+  const descriptor = Object.getOwnPropertyDescriptor(prototype, property)!
+  Object.defineProperty(prototype, property, {
+    ...descriptor,
+    set(value: string) { descriptor.set!.call(this, previewImageUrl(value, location.origin)) },
+  })
+}
+const setAttribute = Element.prototype.setAttribute
+Element.prototype.setAttribute = function (name, value) {
+  const attribute = name.toLowerCase()
+  if ((this instanceof HTMLImageElement && attribute === 'src') ||
+      (this instanceof HTMLAnchorElement && attribute === 'href')) {
+    value = previewImageUrl(value, location.origin)
   }
-  await new Promise(resolve => setTimeout(resolve, 90))
-  return { config, data: result, headers: {}, status: 200, statusText: 'OK' } as AxiosResponse
+  setAttribute.call(this, name, value)
 }
 
 const nativeFetch = window.fetch.bind(window)
 window.fetch = async (input, init) => {
   const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.origin)
-  if (!url.pathname.startsWith('/api/')) return nativeFetch(input, init)
-  if (url.pathname === '/api/generate') {
-    const events = pages.map(page => `event: complete\ndata: ${JSON.stringify({
-      index: page.index, status: 'done', image_url: photos[page.index],
-    })}\n\n`).join('')
-    return new Response(events + `event: finish\ndata: ${JSON.stringify({
-      success: true, task_id: 'preview-task', images: ['0.png', '1.png', '2.png'],
-    })}\n\n`, { headers: { 'Content-Type': 'text/event-stream' } })
-  }
-  return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } })
+  const image = previewImageUrl(url.href, location.origin)
+  if (image !== url.href) return nativeFetch(image, { signal: init?.signal ?? (input instanceof Request ? input.signal : undefined) })
+  if (url.pathname.startsWith('/api/')) return fixtures.fetch(input, init)
+  return nativeFetch(input, init)
 }
 
 async function mount() {
@@ -97,7 +68,7 @@ async function mount() {
   const pinia = createPinia()
   const store = useGeneratorStore(pinia)
   const screen = new URLSearchParams(location.search).get('screen') || 'home'
-  if (screen !== 'home' && screen !== 'login') {
+  if (['workspace', 'workspace-images', 'result'].includes(screen)) {
     store.topic = record.title
     store.setOutline(record.outline.raw, pages.map(page => ({ ...page })))
     store.setRecordId(record.id)
@@ -110,7 +81,12 @@ async function mount() {
     }
   }
   const router = createRouter({ history: createMemoryHistory(), routes: liveRouter.options.routes })
-  const path = screen === 'home' ? '/' : screen === 'login' ? '/login' : screen === 'result' ? '/result' : '/workspace'
+  const paths: Record<string, string> = {
+    home: '/', login: '/login', result: '/result', workspace: '/workspace',
+    'workspace-images': '/workspace', history: '/history', works: '/history',
+    prompts: '/prompts', settings: '/settings', models: '/settings', users: '/users',
+  }
+  const path = paths[screen] || '/'
   await router.push(path)
   const app = createApp(App)
   app.use(pinia)

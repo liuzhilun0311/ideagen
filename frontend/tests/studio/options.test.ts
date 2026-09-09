@@ -5,6 +5,7 @@ vi.mock('../../src/api', () => ({ getConfig: vi.fn(), getPrompts: vi.fn() }))
 import { getConfig, getPrompts, type Config, type PromptItem } from '../../src/api'
 import { useGeneratorStore } from '../../src/stores/generator'
 import { useCreationOptions } from '../../src/composables/useCreationOptions'
+import { useStudioSession } from '../../src/stores/studioSession'
 
 const config: Config = {
   text_generation: {
@@ -38,6 +39,7 @@ it('filters disabled models and falls back to active then first enabled provider
   expect(store.outlinePromptName).toBe('')
   expect(options.prompts.value.outline).toEqual([custom])
   expect(options.loading.value).toBe(false)
+  expect(options.refreshNeeded.value).toBe(false)
   expect(options.error.value).toBeNull()
 })
 
@@ -92,4 +94,37 @@ it.each(['config', 'prompts', 'network'])('reports %s failure without resetting 
   expect(store.outlineModelName).toBe('saved')
   await options.load()
   expect(options.error.value).toBeNull()
+})
+
+it('does not apply an older module refresh to a live generation', async () => {
+  let finish!: (value: { success: boolean; config: Config }) => void
+  vi.mocked(getConfig).mockReturnValue(new Promise(resolve => { finish = resolve }))
+  const store = useGeneratorStore()
+  store.contentModelName = 'selected-at-click'
+  const options = useCreationOptions()
+  const loading = options.load()
+  useStudioSession().workspaceBusy = true
+  finish({ success: true, config })
+  await loading
+  expect(store.contentModelName).toBe('selected-at-click')
+  expect(options.textModels.value).toEqual([])
+  expect(options.loading.value).toBe(false)
+  expect(options.refreshNeeded.value).toBe(true)
+})
+
+it('does not apply an older refresh after replacing the current draft', async () => {
+  let finish!: (value: { success: boolean; config: Config }) => void
+  vi.mocked(getConfig).mockReturnValue(new Promise(resolve => { finish = resolve }))
+  const options = useCreationOptions()
+  const loading = options.load()
+  useStudioSession().replaceDraft()
+  useGeneratorStore().contentModelName = 'new-draft-choice'
+  finish({ success: true, config })
+  await loading
+  expect(useGeneratorStore().contentModelName).toBe('new-draft-choice')
+  expect(options.refreshNeeded.value).toBe(true)
+  vi.mocked(getConfig).mockResolvedValue({ success: true, config })
+  await options.load()
+  expect(options.refreshNeeded.value).toBe(false)
+  expect(options.textModels.value.length).toBeGreaterThan(0)
 })

@@ -2,6 +2,7 @@ import { ref } from 'vue'
 import { getConfig, getPrompts, type Config, type PromptItem } from '../api'
 import { useGeneratorStore } from '../stores/generator'
 import { normalizeApiError, type AppError } from '../utils/errors'
+import { useStudioSession } from '../stores/studioSession'
 
 export interface ModelOption { name: string; label: string }
 
@@ -16,7 +17,9 @@ function enabledModels(section: Config['text_generation']): ModelOption[] {
 
 export function useCreationOptions() {
   const store = useGeneratorStore()
+  const session = useStudioSession()
   const loading = ref(false)
+  const refreshNeeded = ref(false)
   const error = ref<AppError | null>(null)
   const textModels = ref<ModelOption[]>([])
   const imageModels = ref<ModelOption[]>([])
@@ -27,11 +30,22 @@ export function useCreationOptions() {
 
   function load(): Promise<void> {
     if (pending) return pending
+    if (session.busy) {
+      refreshNeeded.value = true
+      return Promise.resolve()
+    }
+    const revision = session.revision
+    const canApply = () => !session.busy && session.revision === revision
     loading.value = true
+    refreshNeeded.value = false
     error.value = null
     pending = (async () => {
       try {
         const [configuration, promptResponse] = await Promise.all([getConfig(), getPrompts()])
+        if (!canApply()) {
+          refreshNeeded.value = true
+          return
+        }
         if (!configuration.success || !configuration.config) {
           throw configuration.error || configuration.error_message || '无法加载模型配置'
         }
@@ -55,7 +69,8 @@ export function useCreationOptions() {
           if (store[key] && !nextPrompts[kind].some(p => p.name === store[key])) store[key] = ''
         }
       } catch (cause) {
-        error.value = normalizeApiError(cause, '创作选项加载失败')
+        if (canApply()) error.value = normalizeApiError(cause, '创作选项加载失败')
+        else refreshNeeded.value = true
       } finally {
         loading.value = false
         pending = null
@@ -64,5 +79,5 @@ export function useCreationOptions() {
     return pending
   }
 
-  return { loading, error, textModels, imageModels, prompts, load }
+  return { loading, refreshNeeded, error, textModels, imageModels, prompts, load }
 }

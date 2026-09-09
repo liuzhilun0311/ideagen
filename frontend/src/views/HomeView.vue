@@ -10,6 +10,7 @@
       :images="store.userImages"
       :loading="generating"
       :cancelling="cancelling"
+      :locked="otherTaskBusy || cancelling"
       :disabled="optionsLoading || !!optionsError || !modelsReady || otherTaskBusy"
       @images-change="store.userImages = $event"
       @generate="handleGenerate"
@@ -23,7 +24,7 @@
               :id="`${group.kind}-model`"
               v-model="store[group.modelKey]"
               class="field"
-              :disabled="generating || optionsLoading || !!optionsError"
+              :disabled="session.busy || optionsLoading || !!optionsError"
             >
               <option v-if="!group.models.length" value="">暂无可用模型</option>
               <option v-for="model in group.models" :key="model.name" :value="model.name">{{ model.label }}</option>
@@ -33,7 +34,7 @@
               :id="`${group.kind}-prompt`"
               v-model="store[group.promptKey]"
               class="field"
-              :disabled="generating || optionsLoading || !!optionsError"
+              :disabled="session.busy || optionsLoading || !!optionsError"
             >
               <option value="">系统默认</option>
               <option v-for="prompt in prompts[group.kind]" :key="prompt.name" :value="prompt.name">{{ prompt.name }}</option>
@@ -83,8 +84,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onActivated, onBeforeUnmount, onMounted, ref } from 'vue'
-import { onBeforeRouteLeave, useRouter } from 'vue-router'
+import { computed, onActivated, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ArrowUpRight, RefreshCw } from 'lucide-vue-next'
 import ComposerInput from '../components/home/ComposerInput.vue'
 import { useCreationOptions } from '../composables/useCreationOptions'
@@ -92,15 +93,24 @@ import { useOutlineGeneration } from '../composables/useOutlineGeneration'
 import { inspirations } from '../features/templates/catalog'
 import { useGeneratorStore } from '../stores/generator'
 import { normalizeApiError, type AppError } from '../utils/errors'
+import { useStudioSession } from '../stores/studioSession'
 
 const store = useGeneratorStore()
 const router = useRouter()
-const { loading: optionsLoading, error: optionsError, textModels, imageModels, prompts, load: loadOptions } = useCreationOptions()
+const route = useRoute()
+const session = useStudioSession()
+const { loading: optionsLoading, refreshNeeded, error: optionsError, textModels, imageModels, prompts, load: loadOptions } = useCreationOptions()
 const { generating, cancelling, error: generationError, start, cancel } = useOutlineGeneration()
 const localError = ref<AppError | null>(null)
 const notice = ref('')
 const visibleError = computed(() => localError.value || generationError.value)
-const otherTaskBusy = computed(() => store.progress.status === 'generating' || store.content.status === 'generating')
+const otherTaskBusy = computed(() => session.workspaceBusy)
+watch(() => generating.value || cancelling.value, value => {
+  session.homeBusy = value
+}, { immediate: true, flush: 'sync' })
+watch([() => session.busy, optionsLoading, refreshNeeded], ([isBusy, isLoading, needsRefresh]) => {
+  if (!isBusy && !isLoading && needsRefresh && route.path === '/') void loadOptions()
+})
 const modelsReady = computed(() =>
   textModels.value.some(model => model.name === store.outlineModelName)
   && textModels.value.some(model => model.name === store.contentModelName)
@@ -133,14 +143,18 @@ async function handleGenerate() {
   const hasResults = !!(store.outline.raw || store.outline.pages.length || store.images.length
     || store.content.titles.length || store.content.copywriting || store.content.tags.length || store.recordId || store.taskId)
   if (hasResults && !window.confirm('开始新创作会清除当前工作台的大纲、图片和文案。已保存的历史记录不受影响，是否继续？')) return
+  if (!session.replaceDraft()) return
   store.setEntrySource('home')
   store.prepareNewOutline()
   if (await start()) {
+    session.notice = '大纲已生成'
     try {
-      await router.push('/workspace')
+      if (route.path === '/') await router.push('/workspace')
     } catch (cause) {
       localError.value = normalizeApiError(cause, '无法打开工作台')
     }
+  } else if (generationError.value) {
+    session.notice = '大纲生成失败，请返回创作查看详情'
   }
 }
 
@@ -148,13 +162,9 @@ async function handleCancel() {
   localError.value = null
   await cancel()
   notice.value = '已取消，主题和参考资料已保留。'
+  session.notice = notice.value
 }
 
-onBeforeRouteLeave(() => {
-  if (!generating.value && !cancelling.value) return true
-  localError.value = normalizeApiError('大纲正在生成或取消，请等待取消完成再离开', '暂时无法离开')
-  return false
-})
 function guardUnload(event: BeforeUnloadEvent) {
   if (!generating.value && !cancelling.value) return
   event.preventDefault()
@@ -162,13 +172,13 @@ function guardUnload(event: BeforeUnloadEvent) {
 }
 let initialActivation = true
 onMounted(() => {
-  void loadOptions()
+  if (!session.busy) void loadOptions()
   window.addEventListener('beforeunload', guardUnload)
 })
 onActivated(() => {
   // KeepAlive invokes activated immediately after mounted on the first visit.
   if (initialActivation) { initialActivation = false; return }
-  void loadOptions()
+  if (!session.busy) void loadOptions()
 })
 onBeforeUnmount(() => window.removeEventListener('beforeunload', guardUnload))
 </script>

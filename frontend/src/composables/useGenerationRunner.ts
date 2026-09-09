@@ -3,6 +3,16 @@ import { useGeneratorStore } from '../stores/generator'
 import { generateImagesPost, cancelCurrentGeneration } from '../api'
 import { formatErrorMessage, normalizeApiError, type AppError } from '../utils/errors'
 import { useGenerationRestore } from './useGenerationRestore'
+import type { Page } from '../api'
+
+export interface ImageGenerationInput {
+  topic: string
+  raw: string
+  pages: Page[]
+  userImages: File[]
+  imagePromptName: string
+  imageModelName: string
+}
 
 export function useGenerationRunner(
   setError: (error: AppError | null) => void
@@ -14,11 +24,17 @@ export function useGenerationRunner(
   let active: { controller: AbortController; started: boolean; finished: boolean } | null = null
   let cancelPending = false
 
-  async function startGenerationFlow(force = false): Promise<void> {
+  async function startGenerationFlow(force = false, snapshot?: ImageGenerationInput): Promise<void> {
     if (active || cancelPending) return
     if (store.outline.pages.length === 0) {
       await router.push('/')
       return
+    }
+    const input = snapshot || {
+      topic: store.topic, raw: store.outline.raw,
+      pages: store.outline.pages.map(page => ({ ...page })),
+      userImages: [...store.userImages],
+      imagePromptName: store.imagePromptName, imageModelName: store.imageModelName,
     }
 
     // Claim ownership before saving; terminal events release it even if EOF stalls.
@@ -57,9 +73,9 @@ export function useGenerationRunner(
       store.startGeneration()
       run.started = true
       await generateImagesPost(
-        store.outline.pages,
+        input.pages,
         null,
-        store.outline.raw,
+        input.raw,
         () => {},
         event => consume(() => {
           if (event.image_url) {
@@ -79,13 +95,13 @@ export function useGenerationRunner(
           settle()
         }),
         error => fail(error, '图片生成失败'),
-        store.userImages.length > 0 ? store.userImages : undefined,
-        store.topic,
+        input.userImages.length > 0 ? input.userImages : undefined,
+        input.topic,
         recordId,
         force,
-        store.imagePromptName,
+        input.imagePromptName,
         run.controller.signal,
-        store.imageModelName,
+        input.imageModelName,
       )
       fail('连接中断，未收到完成确认', '图片生成中断')
     } catch (error) {

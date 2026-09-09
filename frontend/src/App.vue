@@ -33,8 +33,13 @@
         </div>
       </header>
       <main id="main-content" class="layout-main" tabindex="-1">
+        <div v-if="session.busy || session.notice" class="creation-status" role="status">
+          <span>{{ session.notice || '创作任务进行中' }}</span>
+          <button v-if="!isWorkflow(route.path) && route.path !== '/'" type="button" class="status-link" @click="navTo('home')">返回创作</button>
+          <button v-if="!session.busy" type="button" class="icon-button" title="关闭提示" aria-label="关闭创作提示" @click="session.notice = ''"><X :size="16" /></button>
+        </div>
         <RouterView v-slot="{ Component }">
-          <KeepAlive exclude="WorkspaceView"><component :is="Component" /></KeepAlive>
+          <KeepAlive><component :is="Component" /></KeepAlive>
         </RouterView>
       </main>
     </template>
@@ -43,15 +48,18 @@
 
 <script setup lang="ts">
 import { RouterView, useRoute, useRouter } from 'vue-router'
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { Layers2, Menu, X, LogOut, PenLine, Images, MessageSquare, SlidersHorizontal, Users } from 'lucide-vue-next'
 import { setupAutoSave, useGeneratorStore } from './stores/generator'
 import { useAuthStore } from './stores/auth'
+import { useStudioSession } from './stores/studioSession'
 
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 const genStore = useGeneratorStore()
+const session = useStudioSession()
+const creationPath = computed(() => genStore.outline.pages.length ? '/workspace' : '/')
 const isLoginPage = computed(() => route.path === '/login')
 const menuOpen = ref(false)
 const menuToggle = ref<HTMLButtonElement | null>(null)
@@ -73,7 +81,7 @@ function sectionOf(path: string): string {
   if (path.startsWith('/settings')) return 'settings'
   if (path.startsWith('/users')) return 'users'
   if (path.startsWith('/history')) return 'history'
-  if (isWorkflow(path)) return genStore.entrySource === 'history' ? 'history' : 'home'
+  if (isWorkflow(path)) return 'home'
   return 'home'
 }
 function closeMenu(restoreFocus = false) {
@@ -90,6 +98,10 @@ watch(() => route.fullPath, (path) => {
 }, { immediate: true })
 function navTo(section: string) {
   closeMenu(true)
+  if (section === 'home') {
+    void router.push(creationPath.value)
+    return
+  }
   if (sectionOf(route.path) === section) {
     if (route.path !== DEFAULT_ROUTES[section]) router.push(DEFAULT_ROUTES[section])
     return
@@ -102,17 +114,50 @@ async function handleLogout() {
   const failure = await router.push('/login')
   if (!failure) await authStore.logout()
 }
+const removeGuard = router.beforeEach(to => {
+  if (to.path !== '/login' || route.path === '/login') return true
+  if (session.busy) {
+    session.notice = '请先取消创作任务再退出登录'
+    return false
+  }
+  return !(session.dirty || (genStore.topic.trim() && !genStore.recordId))
+    || window.confirm('当前创作尚未保存到服务器，确定退出登录？')
+})
+const scrollPositions = new Map<string, number>()
+const removeScrollGuard = router.beforeEach((_to, from) => {
+  scrollPositions.set(from.fullPath, window.scrollY)
+})
+const removeScrollRestore = router.afterEach(async (to, _from, failure) => {
+  if (failure) return
+  await nextTick()
+  if (route.fullPath === to.fullPath) window.scrollTo({ top: scrollPositions.get(to.fullPath) || 0, behavior: 'instant' })
+})
+function guardUnload(event: BeforeUnloadEvent) {
+  if (!session.busy && !session.dirty && !(genStore.topic.trim() && !genStore.recordId)) return
+  event.preventDefault()
+  event.returnValue = ''
+}
 function handleEscape(event: KeyboardEvent) {
   if (event.key === 'Escape') closeMenu(true)
 }
 onMounted(() => {
   setupAutoSave()
   window.addEventListener('keydown', handleEscape)
+  window.addEventListener('beforeunload', guardUnload)
 })
-onUnmounted(() => window.removeEventListener('keydown', handleEscape))
+onUnmounted(() => {
+  removeGuard()
+  removeScrollGuard()
+  removeScrollRestore()
+  window.removeEventListener('keydown', handleEscape)
+  window.removeEventListener('beforeunload', guardUnload)
+})
 </script>
 
 <style scoped>
+.creation-status { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; min-height:44px; margin-bottom:16px; padding:0 12px; border-left:3px solid var(--primary); background:#eef3ff; font-size:14px; }
+.creation-status>.icon-button { margin-left:auto; }
+.status-link { background:none; border:0; color:var(--primary); font:inherit; min-height:44px; text-decoration:underline; }
 .studio-header {
   position: fixed; inset: 0 0 auto; height: var(--header-height); z-index: 100;
   display: flex; align-items: center; gap: 40px; padding: 0 32px;
