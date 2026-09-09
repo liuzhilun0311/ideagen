@@ -33,6 +33,8 @@
 
 ## 阶段 2：响应式创作产品
 
+2026-09-09 进度：响应式 UI 子项目已实现，逐文件计划见 `2026-09-09-responsive-studio.md`，验收见 `../verification/2026-09-09-responsive-studio.md`。原路线中后端版本冲突、稳定页面 ID、按用户隔离草稿与完整 SSE parser 仍待后续接口阶段，不因 UI 交付标记整阶段完成。全局外壳沿用 `App.vue`，没有额外创建不必要的 `AppShell.vue`。
+
 执行顺序与文件归属：
 
 1. 全局外壳与设计系统：`frontend/src/App.vue`、`frontend/src/assets/css/{variables,base,components}.css`，新增 `frontend/src/components/layout/AppShell.vue`。统一 Lucide 图标、焦点、间距与移动导航；主操作使用实色蓝，青绿用于成功，橙色只标警告，紫色不作为大面积背景。

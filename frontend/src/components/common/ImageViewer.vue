@@ -22,6 +22,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, onUnmounted } from 'vue'
 import { getToken } from '../../api/token'
+import { getOriginalImageUrl } from '../../utils/imageUrl'
 
 const props = defineProps<{
   visible: boolean
@@ -35,12 +36,7 @@ const emit = defineEmits<{
 
 const scale = ref(1)
 
-const fullSrc = computed(() => {
-  if (!props.src) return ''
-  const baseUrl = props.src.split('?')[0]
-  const token = getToken()
-  return `${baseUrl}?thumbnail=false${token ? `&token=${encodeURIComponent(token)}` : ''}`
-})
+const fullSrc = computed(() => getOriginalImageUrl(props.src, getToken()))
 
 const onWheel = (e: WheelEvent) => {
   const delta = e.deltaY > 0 ? -0.15 : 0.15

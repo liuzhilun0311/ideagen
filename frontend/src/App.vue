@@ -1,60 +1,40 @@
 <template>
-  <div id="app">
-    <!-- 登录页：全屏展示，不显示侧边栏 -->
-    <template v-if="isLoginPage">
-      <RouterView />
-    </template>
-
+  <div class="app-shell">
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+    <main v-if="isLoginPage" id="main-content" tabindex="-1"><RouterView /></main>
     <template v-else>
-      <!-- 侧边栏 Sidebar -->
-      <aside class="layout-sidebar">
-        <div class="logo-area">
-          <span class="brand-title">AI 图文创作</span>
-        </div>
-
-        <nav class="nav-menu">
-          <button type="button" class="nav-item" :class="{ active: sectionOf(route.path) === 'home' }" @click="navTo('home')">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
-            创作中心
-          </button>
-          <button type="button" class="nav-item" :class="{ active: sectionOf(route.path) === 'history' }" @click="navTo('history')">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-            历史记录
-          </button>
-          <button type="button" class="nav-item" :class="{ active: sectionOf(route.path) === 'prompts' }" @click="navTo('prompts')">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path><line x1="9" y1="10" x2="15" y2="10"></line><line x1="9" y1="14" x2="13" y2="14"></line></svg>
-            提示词设计
-          </button>
-          <button type="button" class="nav-item" :class="{ active: sectionOf(route.path) === 'settings' }" @click="navTo('settings')">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M12 1v6m0 6v6m-6-6h6m6 0h-6"></path><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-            模型设置
-          </button>
-          <button v-if="authStore.isAdmin" type="button" class="nav-item" :class="{ active: sectionOf(route.path) === 'users' }" @click="navTo('users')">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
-            用户管理
-          </button>
-        </nav>
-
-        <div class="sidebar-user" style="margin-top: auto; padding-top: 20px; border-top: 1px solid var(--border-color);">
-          <div style="display: flex; align-items: center; gap: 10px;">
-            <div class="user-avatar">{{ avatarChar }}</div>
-            <div style="flex: 1; min-width: 0;">
-              <div style="font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ authStore.username }}</div>
-              <div style="font-size: 12px; color: var(--text-sub);">{{ authStore.isAdmin ? '管理员' : '普通用户' }}</div>
-            </div>
-            <button class="logout-btn" type="button" title="退出登录" @click="handleLogout">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+      <header class="studio-header">
+        <button type="button" class="brand" aria-label="IdeaGen 创作首页" @click="navTo('home')">
+          <Layers2 :size="25" aria-hidden="true" /><span>IdeaGen</span>
+        </button>
+        <button ref="menuToggle" type="button" class="icon-button menu-toggle"
+          :aria-expanded="menuOpen" aria-controls="primary-navigation"
+          :aria-label="menuOpen ? '关闭导航菜单' : '打开导航菜单'"
+          :title="menuOpen ? '关闭导航菜单' : '打开导航菜单'" @click="menuOpen = !menuOpen">
+          <X v-if="menuOpen" :size="20" aria-hidden="true" />
+          <Menu v-else :size="20" aria-hidden="true" />
+        </button>
+        <div id="primary-navigation" class="header-menu" :class="{ 'is-open': menuOpen }">
+          <nav class="nav-menu" aria-label="主要导航">
+            <button v-for="item in navigation" :key="item.section" type="button" class="nav-item"
+              :class="{ active: sectionOf(route.path) === item.section }"
+              :aria-current="sectionOf(route.path) === item.section ? 'page' : undefined"
+              @click="navTo(item.section)">
+              <component :is="item.icon" :size="18" aria-hidden="true" />{{ item.label }}
+            </button>
+          </nav>
+          <div class="header-user">
+            <span class="user-avatar" aria-hidden="true">{{ avatarChar }}</span>
+            <span class="user-name" :title="authStore.username">{{ authStore.username }}</span>
+            <button class="icon-button logout-btn" type="button" title="退出登录" aria-label="退出登录" @click="handleLogout">
+              <LogOut :size="19" aria-hidden="true" />
             </button>
           </div>
         </div>
-      </aside>
-
-      <!-- 主内容区 -->
-      <main class="layout-main">
+      </header>
+      <main id="main-content" class="layout-main" tabindex="-1">
         <RouterView v-slot="{ Component }">
-          <KeepAlive>
-            <component :is="Component" />
-          </KeepAlive>
+          <KeepAlive exclude="WorkspaceView"><component :is="Component" /></KeepAlive>
         </RouterView>
       </main>
     </template>
@@ -63,7 +43,8 @@
 
 <script setup lang="ts">
 import { RouterView, useRoute, useRouter } from 'vue-router'
-import { computed, onMounted, reactive, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { Layers2, Menu, X, LogOut, PenLine, Images, MessageSquare, SlidersHorizontal, Users } from 'lucide-vue-next'
 import { setupAutoSave, useGeneratorStore } from './stores/generator'
 import { useAuthStore } from './stores/auth'
 
@@ -71,119 +52,111 @@ const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 const genStore = useGeneratorStore()
-
-// 登录页不显示侧边栏
 const isLoginPage = computed(() => route.path === '/login')
-
-// 各导航模块的默认首页
+const menuOpen = ref(false)
+const menuToggle = ref<HTMLButtonElement | null>(null)
+const navigation = computed(() => [
+  { section: 'home', label: '创作', icon: PenLine },
+  { section: 'history', label: '作品', icon: Images },
+  { section: 'prompts', label: '提示词', icon: MessageSquare },
+  { section: 'settings', label: '模型', icon: SlidersHorizontal },
+  ...(authStore.isAdmin ? [{ section: 'users', label: '用户管理', icon: Users }] : []),
+])
 const DEFAULT_ROUTES: Record<string, string> = {
-  home: '/',
-  history: '/history',
-  prompts: '/prompts',
-  settings: '/settings',
-  users: '/users',
+  home: '/', history: '/history', prompts: '/prompts', settings: '/settings', users: '/users',
 }
-
-// 各模块最后访问的路径（模块切换记忆功能）
 const lastRouteBySection = reactive<Record<string, string>>({ ...DEFAULT_ROUTES })
+const isWorkflow = (path: string) => /^\/(workspace|outline|generate|result)(\/|$|\?)/.test(path)
 
-// 判断当前路径属于哪个导航模块
 function sectionOf(path: string): string {
-  if (path === '/') return 'home'
   if (path.startsWith('/prompts')) return 'prompts'
   if (path.startsWith('/settings')) return 'settings'
   if (path.startsWith('/users')) return 'users'
   if (path.startsWith('/history')) return 'history'
-  // 编辑/生成/结果页：按进入来源归属模块（从历史进入属于"历史记录"）
-  if (path.startsWith('/outline') || path.startsWith('/generate') || path.startsWith('/result')) {
-    return genStore.entrySource === 'history' ? 'history' : 'home'
-  }
+  if (isWorkflow(path)) return genStore.entrySource === 'history' ? 'history' : 'home'
   return 'home'
 }
-
-// 记录每个模块最后访问的路径。
-// 注意：/outline /generate /result 是编辑流程页，依赖当前任务上下文，
-// 作为导航入口记忆没有意义（跨模块切回来会跳到脱离上下文的页面），
-// 因此遇到这些页面时将该模块记忆重置为模块首页。
+function closeMenu(restoreFocus = false) {
+  if (!menuOpen.value) return
+  menuOpen.value = false
+  if (restoreFocus) menuToggle.value?.focus()
+}
 watch(() => route.fullPath, (path) => {
-  const section = sectionOf(path)
-  if (path.startsWith('/outline') || path.startsWith('/generate') || path.startsWith('/result')) {
-    lastRouteBySection[section] = DEFAULT_ROUTES[section]
-  } else {
-    lastRouteBySection[section] = path
-  }
+  closeMenu()
+  if (route.path === '/login') return
+  const section = sectionOf(route.path)
+  // Workflow routes depend on the current draft, so remember the section landing page.
+  lastRouteBySection[section] = isWorkflow(route.path) ? DEFAULT_ROUTES[section] : path
 }, { immediate: true })
-
-// 点击导航：跨模块 -> 恢复该模块上次位置；同模块 -> 回该模块首页
 function navTo(section: string) {
-  const current = sectionOf(route.path)
-  if (current === section) {
-    if (route.path !== DEFAULT_ROUTES[section]) {
-      router.push(DEFAULT_ROUTES[section])
-    }
+  closeMenu(true)
+  if (sectionOf(route.path) === section) {
+    if (route.path !== DEFAULT_ROUTES[section]) router.push(DEFAULT_ROUTES[section])
     return
   }
   const target = lastRouteBySection[section] || DEFAULT_ROUTES[section]
-  // 记忆的目标路径与当前路径相同（如都在 /outline，但分属不同模块）时，
-  // 直接回该模块首页，避免"点了没反应"
   router.push(target === route.fullPath ? DEFAULT_ROUTES[section] : target)
 }
-
-// 头像首字符
-const avatarChar = computed(() => {
-  const name = authStore.username || 'U'
-  return name.charAt(0).toUpperCase()
-})
-
+const avatarChar = computed(() => (authStore.username || 'U').charAt(0).toUpperCase())
 async function handleLogout() {
-  await authStore.logout()
-  router.push('/login')
+  const failure = await router.push('/login')
+  if (!failure) await authStore.logout()
 }
-
-// 启用自动保存到 localStorage
+function handleEscape(event: KeyboardEvent) {
+  if (event.key === 'Escape') closeMenu(true)
+}
 onMounted(() => {
   setupAutoSave()
+  window.addEventListener('keydown', handleEscape)
 })
+onUnmounted(() => window.removeEventListener('keydown', handleEscape))
 </script>
 
 <style scoped>
+.studio-header {
+  position: fixed; inset: 0 0 auto; height: var(--header-height); z-index: 100;
+  display: flex; align-items: center; gap: 40px; padding: 0 32px;
+  background: var(--bg-card); border-bottom: 1px solid var(--border-color);
+}
+.brand {
+  display: inline-flex; align-items: center; gap: 10px; min-height: 44px;
+  border: 0; background: transparent; font-size: 22px; font-weight: 700; cursor: pointer; flex-shrink: 0;
+}
+.brand svg { color: var(--primary); }
+.header-menu { display: flex; align-items: center; flex: 1; min-width: 0; gap: 20px; }
+.nav-menu { display: flex; align-items: center; gap: 4px; }
+.nav-item {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 44px; padding: 8px 12px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--text-sub); font-size: 15px; white-space: nowrap; cursor: pointer;
+}
+.nav-item:hover { background: var(--bg-body); color: var(--text-main); }
+.nav-item.active { background: var(--primary-light); color: var(--primary); font-weight: 600; }
+.header-user { margin-left: auto; display: flex; align-items: center; gap: 10px; min-width: 0; }
 .user-avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--primary) 0%, #ff6b6b 100%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: white;
-  font-weight: 600;
-  font-size: 14px;
-  flex-shrink: 0;
+  width: 32px; height: 32px; flex: 0 0 32px; border-radius: 50%;
+  display: grid; place-items: center; background: var(--success-light);
+  color: var(--success); font-size: 14px; font-weight: 600;
 }
-.brand-title {
-  display: inline-block;
-  font-size: 20px;
-  font-weight: 800;
-  background: linear-gradient(135deg, #ff2442 0%, #ff5c72 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  letter-spacing: 1px;
+.user-name { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.menu-toggle { display: none; margin-left: auto; }
+@media (max-width: 1000px) {
+  .studio-header { gap: 20px; }
+  .user-name { display: none; }
 }
-.logout-btn {
-  background: none;
-  border: none;
-  color: var(--text-sub);
-  cursor: pointer;
-  padding: 4px;
-  border-radius: 6px;
-  display: inline-flex;
-  align-items: center;
-  transition: all 0.2s;
-  flex-shrink: 0;
-}
-.logout-btn:hover {
-  color: var(--primary);
-  background: rgba(255, 36, 66, 0.08);
+@media (max-width: 800px) {
+  .studio-header { padding: 0 16px; }
+  .menu-toggle { display: inline-flex; }
+  .header-menu {
+    display: none; position: absolute; top: 64px; left: 0; right: 0;
+    padding: 16px; background: var(--bg-card); border-bottom: 1px solid var(--border-color);
+    max-height: calc(100dvh - 64px); overflow-y: auto;
+  }
+  .header-menu.is-open { display: flex; flex-direction: column; align-items: stretch; }
+  .nav-menu { flex-direction: column; align-items: stretch; }
+  .nav-item { justify-content: flex-start; font-size: 16px; }
+  .header-user { margin-left: 0; padding-top: 12px; border-top: 1px solid var(--border-color); }
+  .user-name { display: block; max-width: none; flex: 1; }
+  .logout-btn { margin-left: auto; }
 }
 </style>

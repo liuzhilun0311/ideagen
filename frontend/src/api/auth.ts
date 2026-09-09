@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { API_BASE_URL } from './client'
+import { getToken } from './token'
 import type { AppError } from '../utils/errors'
 
 export interface AuthUser {
@@ -31,12 +32,17 @@ export async function login(username: string, password: string): Promise<{
   return response.data
 }
 
-export async function logout(): Promise<{
+export async function logout(token: string = getToken()): Promise<{
   success: boolean
   error?: AppError | string
   error_message?: string
 }> {
-  const response = await axios.post(`${API_BASE_URL}/auth/logout`)
+  // Global interceptors use the latest token and redirect on 401, which could
+  // affect a new session while this old session's logout is still in flight.
+  const response = await axios.create().post(`${API_BASE_URL}/auth/logout`, undefined, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    timeout: 10000,
+  })
   return response.data
 }
 

@@ -1,209 +1,215 @@
 <template>
-  <div class="container home-container">
-    <!-- 图片网格轮播背景 -->
-    <ShowcaseBackground />
-    <!-- Hero Area -->
-    <div class="hero-section">
-      <div class="hero-content">
-        <h1 class="page-title">灵感一触而就</h1>
-        <p class="page-subtitle">您专注奇思妙想，AI完成内容创作</p>
+  <div class="home-page">
+    <header class="home-heading">
+      <h1>新建创作</h1>
+      <p>从一个想法开始。</p>
+    </header>
+    <ComposerInput
+      v-model="store.topic"
+      v-model:reference-content="store.referenceContent"
+      :images="store.userImages"
+      :loading="generating"
+      :cancelling="cancelling"
+      :disabled="optionsLoading || !!optionsError || !modelsReady || otherTaskBusy"
+      @images-change="store.userImages = $event"
+      @generate="handleGenerate"
+      @cancel="handleCancel"
+    >
+      <template #options>
+        <div class="model-settings">
+          <div v-for="group in settingGroups" :key="group.kind" class="model-group">
+            <label :for="`${group.kind}-model`">{{ group.label }}模型</label>
+            <select
+              :id="`${group.kind}-model`"
+              v-model="store[group.modelKey]"
+              class="field"
+              :disabled="generating || optionsLoading || !!optionsError"
+            >
+              <option v-if="!group.models.length" value="">暂无可用模型</option>
+              <option v-for="model in group.models" :key="model.name" :value="model.name">{{ model.label }}</option>
+            </select>
+            <label :for="`${group.kind}-prompt`">{{ group.label }}提示词</label>
+            <select
+              :id="`${group.kind}-prompt`"
+              v-model="store[group.promptKey]"
+              class="field"
+              :disabled="generating || optionsLoading || !!optionsError"
+            >
+              <option value="">系统默认</option>
+              <option v-for="prompt in prompts[group.kind]" :key="prompt.name" :value="prompt.name">{{ prompt.name }}</option>
+            </select>
+          </div>
+        </div>
+      </template>
+    </ComposerInput>
+    <div class="home-feedback" aria-live="polite">
+      <p v-if="optionsLoading" role="status">正在加载创作选项…</p>
+      <div v-else-if="optionsError" class="feedback-error" role="alert">
+        <p>{{ optionsError.title }}：{{ optionsError.detail }}</p>
+        <button type="button" class="btn" :disabled="generating" @click="loadOptions"><RefreshCw :size="16" aria-hidden="true" />重试</button>
       </div>
-      <!-- 主题输入组合框 -->
-      <div class="composer-wrap">
-        <ComposerInput
-          v-model="topic"
-          v-model:reference-content="referenceContent"
-          :loading="loading"
-          :button-text="'进入编辑大纲'"
-          @generate="handleGenerate"
-          @imagesChange="handleImagesChange"
-          style="width: 100%"
-        />
-      </div>
+      <p v-else-if="!modelsReady">
+        尚未配置可用的{{ !textModels.length ? '文字' : '图片' }}模型。
+        <RouterLink to="/settings">前往设置</RouterLink>
+      </p>
+      <p v-if="otherTaskBusy" role="status">已有任务正在生成，请先返回工作台完成或取消。<RouterLink to="/workspace">返回工作台</RouterLink></p>
+      <p v-if="visibleError" class="feedback-error" role="alert">{{ visibleError.title }}：{{ visibleError.detail }}</p>
+      <p v-if="notice" role="status">{{ notice }}</p>
     </div>
-    <ErrorCard
-      v-if="error"
-      class="home-error"
-      :error="error"
-      dismissible
-      @dismiss="error = null"
-    />
+    <section class="inspiration-section" aria-labelledby="inspiration-heading">
+      <div class="section-heading">
+        <h2 id="inspiration-heading">创作灵感</h2>
+        <span>生活里的新题材</span>
+      </div>
+      <div class="inspiration-grid">
+        <button
+          v-for="item in inspirations"
+          :key="item.id"
+          type="button"
+          class="inspiration-card"
+          :disabled="generating || otherTaskBusy"
+          :aria-label="`选用灵感：${item.title}`"
+          @click="chooseInspiration(item.topic)"
+        >
+          <img :src="item.image" :alt="item.alt" width="600" height="400" loading="lazy" />
+          <span class="inspiration-copy">
+            <span class="inspiration-category">{{ item.category }} · 灵感</span>
+            <span class="inspiration-title">{{ item.title }}<ArrowUpRight :size="18" aria-hidden="true" /></span>
+          </span>
+        </button>
+      </div>
+    </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, onActivated } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onActivated, onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeRouteLeave, useRouter } from 'vue-router'
+import { ArrowUpRight, RefreshCw } from 'lucide-vue-next'
+import ComposerInput from '../components/home/ComposerInput.vue'
+import { useCreationOptions } from '../composables/useCreationOptions'
+import { useOutlineGeneration } from '../composables/useOutlineGeneration'
+import { inspirations } from '../features/templates/catalog'
 import { useGeneratorStore } from '../stores/generator'
 import { normalizeApiError, type AppError } from '../utils/errors'
-// 引入组件
-import ShowcaseBackground from '../components/home/ShowcaseBackground.vue'
-import ComposerInput from '../components/home/ComposerInput.vue'
-import ErrorCard from '../components/common/ErrorCard.vue'
 
-const router = useRouter()
 const store = useGeneratorStore()
+const router = useRouter()
+const { loading: optionsLoading, error: optionsError, textModels, imageModels, prompts, load: loadOptions } = useCreationOptions()
+const { generating, cancelling, error: generationError, start, cancel } = useOutlineGeneration()
+const localError = ref<AppError | null>(null)
+const notice = ref('')
+const visibleError = computed(() => localError.value || generationError.value)
+const otherTaskBusy = computed(() => store.progress.status === 'generating' || store.content.status === 'generating')
+const modelsReady = computed(() =>
+  textModels.value.some(model => model.name === store.outlineModelName)
+  && textModels.value.some(model => model.name === store.contentModelName)
+  && imageModels.value.some(model => model.name === store.imageModelName),
+)
+const settingGroups = computed(() => [
+  { kind: 'outline', label: '大纲', modelKey: 'outlineModelName', promptKey: 'outlinePromptName', models: textModels.value },
+  { kind: 'image', label: '图片', modelKey: 'imageModelName', promptKey: 'imagePromptName', models: imageModels.value },
+  { kind: 'content', label: '文案', modelKey: 'contentModelName', promptKey: 'contentPromptName', models: textModels.value },
+] as const)
 
-// 状态
-const topic = ref('')
-// 参考内容（选填）
-const referenceContent = ref('')
-const loading = ref(false)
-const error = ref<AppError | null>(null)
-// 上传的图片文件
-const uploadedImageFiles = ref<File[]>([])
-
-/**
- * 处理图片变化
- */
-function handleImagesChange(images: File[]) {
-  uploadedImageFiles.value = images
+function chooseInspiration(topic: string) {
+  if (generating.value || otherTaskBusy.value) return
+  if (store.topic.trim() && store.topic !== topic && !window.confirm('用这条灵感替换当前主题？参考资料和其他设置会保留。')) return
+  store.topic = topic
 }
 
-// 主题/参考内容与 store 保持同步：
-// 点击输入栏的 × 清空时，必须连 store 记忆一起清空，
-// 否则切到其他页面再回来（restoreHomeInputs 从 store 恢复）旧内容又会重新出现
-watch(topic, (val) => {
-  store.topic = val
-})
-watch(referenceContent, (val) => {
-  store.referenceContent = val
-})
-
-
-
-/**
- * 进入编辑大纲
- * 不在首页生成大纲，携带主题/参考图直接进入编辑大纲页面，生成大纲在那边进行
- */
-function handleGenerate() {
-  if (!topic.value.trim()) {
-    error.value = normalizeApiError('请先输入主题', '主题为空')
+async function handleGenerate() {
+  if (generating.value || cancelling.value || optionsLoading.value || otherTaskBusy.value) return
+  localError.value = null
+  notice.value = ''
+  if (!store.topic.trim()) {
+    localError.value = normalizeApiError('请先输入主题', '无法开始创作')
     return
   }
-
-  const imageFiles = uploadedImageFiles.value
-
-  // 保存主题、参考内容与参考图到 store，进入编辑大纲页面
-  store.setTopic(topic.value.trim())
-  store.referenceContent = referenceContent.value.trim()
-  if (imageFiles.length > 0) {
-    store.userImages = imageFiles
-  } else {
-    store.userImages = []
+  if (optionsError.value || !modelsReady.value) {
+    localError.value = normalizeApiError('请在设置中配置可用模型，并重新加载创作选项', '模型不可用')
+    return
   }
+  const hasResults = !!(store.outline.raw || store.outline.pages.length || store.images.length
+    || store.content.titles.length || store.content.copywriting || store.content.tags.length || store.recordId || store.taskId)
+  if (hasResults && !window.confirm('开始新创作会清除当前工作台的大纲、图片和文案。已保存的历史记录不受影响，是否继续？')) return
   store.setEntrySource('home')
-
-  // 清空上一次任务的草稿（旧大纲/图片/文案/历史记录ID），但保留本次新输入的主题、参考内容与参考图
-  // 必须在这里清理（而不是 OutlineView 的 onMounted）：页面组件被 KeepAlive 缓存后，
-  // 再次进入 /outline 不会重新执行 onMounted，旧内容会残留
   store.prepareNewOutline()
-
-  // 保留首页已填内容（主题/参考图预览），退出编辑回到首页时仍能恢复
-  router.push('/outline')
+  if (await start()) {
+    try {
+      await router.push('/workspace')
+    } catch (cause) {
+      localError.value = normalizeApiError(cause, '无法打开工作台')
+    }
+  }
 }
 
-// 各输入栏内部自带 × 清空按钮（主题/参考内容），参考图片可单张删除，不再需要外部清空按钮
-// 记忆恢复：从其他模块/页面刷新回来时，恢复之前填写的主题
-// （KeepAlive 下本地状态通常还在，这里兜底恢复更早会话的主题）
+async function handleCancel() {
+  localError.value = null
+  await cancel()
+  notice.value = '已取消，主题和参考资料已保留。'
+}
+
+onBeforeRouteLeave(() => {
+  if (!generating.value && !cancelling.value) return true
+  localError.value = normalizeApiError('大纲正在生成或取消，请等待取消完成再离开', '暂时无法离开')
+  return false
+})
+function guardUnload(event: BeforeUnloadEvent) {
+  if (!generating.value && !cancelling.value) return
+  event.preventDefault()
+  event.returnValue = ''
+}
+let initialActivation = true
 onMounted(() => {
-  restoreHomeInputs()
+  void loadOptions()
+  window.addEventListener('beforeunload', guardUnload)
 })
 onActivated(() => {
-  restoreHomeInputs()
+  // KeepAlive invokes activated immediately after mounted on the first visit.
+  if (initialActivation) { initialActivation = false; return }
+  void loadOptions()
 })
-
-/**
- * 恢复首页已填内容（主题 + 参考内容）
- */
-function restoreHomeInputs() {
-  if (!topic.value && store.topic) {
-    topic.value = store.topic
-  }
-  if (!referenceContent.value && store.referenceContent) {
-    referenceContent.value = store.referenceContent
-  }
-}
+onBeforeUnmount(() => window.removeEventListener('beforeunload', guardUnload))
 </script>
 
 <style scoped>
-.home-container {
-  max-width: 1100px;
-  padding-top: 10px;
-  position: relative;
-  z-index: 1;
+.home-page { width: 100%; max-width: 960px; min-width: 0; margin: 0 auto; padding: 40px 24px 56px; color: #252935; }
+.home-heading { margin-bottom: 28px; }
+.home-heading h1 { margin: 0; font-size: 28px; line-height: 1.3; font-weight: 650; letter-spacing: 0; }
+.home-heading p { margin: 10px 0 0; color: #656b78; font-size: 16px; }
+.model-settings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+.model-group { display: grid; gap: 10px; min-width: 0; align-content: start; }
+.model-group label { font-size: 16px; font-weight: 500; }
+.model-group select { min-width: 0; max-width: 100%; font-size: 16px; text-overflow: ellipsis; }
+.model-group label:not(:first-child) { margin-top: 6px; }
+.home-feedback { font-size: 16px; line-height: 1.65; color: #656b78; overflow-wrap: anywhere; }
+.home-feedback:has(> *) { margin-top: 18px; }
+.home-feedback a { color: #315ee8; display: inline-flex; align-items: center; min-height: 44px; text-decoration: underline; }
+.feedback-error { color: #a62b35; }
+.inspiration-section { margin-top: 44px; }
+.section-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 20px; margin-bottom: 18px; }
+.section-heading h2 { margin: 0; font-size: 20px; line-height: 1.4; }
+.section-heading > span { color: #656b78; font-size: 16px; }
+.inspiration-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+.inspiration-card { min-width: 0; text-align: left; padding: 0; border: 1px solid #e2e5eb; border-radius: 8px; overflow: hidden; background: white; color: inherit; font: inherit; cursor: pointer; transition: border-color 180ms ease; }
+.inspiration-card:hover { border-color: #315ee8; }
+.inspiration-card:focus-visible { outline: 2px solid #315ee8; outline-offset: 3px; }
+.inspiration-card:disabled { opacity: .6; cursor: not-allowed; }
+.inspiration-card > img { display: block; width: 100%; height: auto; aspect-ratio: 3 / 2; object-fit: cover; background: #f7f8fa; }
+.inspiration-copy { display: grid; gap: 8px; padding: 16px; }
+.inspiration-category { color: #656b78; font-size: 16px; }
+.inspiration-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
+.inspiration-title svg { flex-shrink: 0; }
+@media (max-width: 700px) {
+  .home-page { padding: 24px 16px 40px; }
+  .home-heading { margin-bottom: 24px; }
+  .model-settings { grid-template-columns: 1fr; gap: 24px; }
+  .inspiration-grid { grid-template-columns: 1fr; gap: 16px; }
+  .inspiration-card { display: grid; grid-template-columns: 112px minmax(0, 1fr); align-items: center; }
+  .inspiration-card > img { height: 100%; min-height: 112px; aspect-ratio: 1; }
+  .inspiration-copy { padding: 12px; }
+  .inspiration-section { margin-top: 32px; }
 }
-/* Hero Section */
-.hero-section {
-  text-align: center;
-  margin-bottom: 40px;
-  padding: 50px 60px;
-  animation: fadeIn 0.6s ease-out;
-  background: rgba(255, 255, 255, 0.95);
-  border-radius: 24px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.06);
-  backdrop-filter: blur(10px);
-}
-.hero-content {
-  margin-bottom: 36px;
-}
-/* 首页主标题：颜色与侧边栏「AI 图文创作」品牌渐变一致 */
-.hero-content .page-title {
-  background: linear-gradient(135deg, #ff2442 0%, #ff5c72 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
-  letter-spacing: -1px;
-}
-.page-subtitle {
-  font-size: 16px;
-  color: var(--text-sub);
-  margin-top: 12px;
-}
-/* 输入+取消按钮容器，加宽输入区域 */
-.composer-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  align-items: center;
-  width: 100%;
-}
-/* 穿透scoped，让子组件输入框占满父容器宽度 */
-.composer-wrap :deep(.composer-input) {
-  width: 100%;
-}
-.btn-cancel {
-  padding: 8px 20px;
-  border: 1px solid #cccccc;
-  background: #ffffff;
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: 14px;
-  color: #666666;
-  transition: all 0.2s;
-}
-.btn-cancel:hover {
-  background: #f5f5f5;
-}
-
-/* 各输入栏内部自带 × 清空按钮（见 ComposerInput），外部清空按钮已移除 */
-.home-error {
-  position: fixed;
-  bottom: 32px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: min(720px, calc(100vw - 32px));
-  z-index: 1000;
-  animation: slideUp 0.3s ease-out;
-}
-/* Animations */
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-@keyframes slideUp {
-  from { opacity: 0; transform: translateX(-50%) translateY(20px); }
-  to { opacity: 1; transform: translateX(-50%) translateY(0); }
-}
+@media (prefers-reduced-motion: reduce) { .inspiration-card { transition: none; } }
 </style>

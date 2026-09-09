@@ -36,11 +36,11 @@ export function useImageRetry(_setError: (error: AppError | null) => void) {
       recordId: store.recordId
     }
 
-    apiRegenerateImage(store.taskId, page, true, context, store.imagePromptName, store.imageModelName)
+    return apiRegenerateImage(store.taskId, page, true, context, store.imagePromptName, store.imageModelName)
       .then(result => {
         if (result.success && result.image_url) {
           store.updateImage(index, result.image_url)
-          finishIfAllImagesDone() // ✅【原有】成功后执行完成判断（内部现在带跳转）
+          finishIfAllImagesDone()
         } else {
           store.updateProgress(
             index,

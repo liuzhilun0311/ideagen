@@ -2,8 +2,7 @@
 // 并确保已安装 vue-router@3（npm install vue-router@4）
 import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from '../views/HomeView.vue'
-import OutlineView from '../views/OutlineView.vue'
-import GenerateView from '../views/GenerateView.vue'
+import WorkspaceView from '../views/WorkspaceView.vue'
 import ResultView from '../views/ResultView.vue'
 import HistoryView from '../views/HistoryView.vue'
 import SettingsView from '../views/SettingsView.vue'
@@ -30,12 +29,17 @@ const router = createRouter({
     {
       path: '/outline',
       name: 'outline',
-      component: OutlineView
+      redirect: '/workspace'
     },
     {
       path: '/generate',
       name: 'generate',
-      component: GenerateView
+      redirect: '/workspace'
+    },
+    {
+      path: '/workspace',
+      name: 'workspace',
+      component: WorkspaceView
     },
     {
       path: '/result',
@@ -72,19 +76,7 @@ const router = createRouter({
 })
 
 // 全局路由守卫：未登录跳转到登录页；管理员页面校验管理员身份
-router.beforeEach((to, from) => {
-  // 进入编辑大纲页时的草稿清理（在路由层统一处理）：
-  // 组件被 KeepAlive 缓存后，onMounted 不会重新触发，旧大纲可能在组件内残留。
-  // 规则：
-  // - 从首页新建任务进入（entrySource=home，无 from=generate）→ 清空旧草稿
-  // - 从历史记录进入（entrySource=history）→ 保留该记录内容
-  // - 从图文页"返回编辑大纲"（query.from=generate 或 from=/generate，含浏览器返回）→ 保留当前大纲继续编辑
-  if (to.path === '/outline' && to.query.from !== 'generate' && from.path !== '/generate') {
-    const genStore = useGeneratorStore()
-    if (genStore.entrySource !== 'history') {
-      genStore.prepareNewOutline()
-    }
-  }
+router.beforeEach((to) => {
   if (to.meta.public) return true
   if (!getToken()) {
     return { name: 'login', query: { redirect: to.fullPath } }
@@ -92,6 +84,7 @@ router.beforeEach((to, from) => {
   if (to.meta.admin && !getUser()?.is_admin) {
     return { name: 'home' }
   }
+  if (to.name === 'workspace' && !useGeneratorStore().outline.pages.length) return { name: 'home' }
   return true
 })
 

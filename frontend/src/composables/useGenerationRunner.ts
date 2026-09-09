@@ -96,15 +96,15 @@ export function useGenerationRunner(
     }
   }
 
-  function cancelGenerationFlow(): void {
-    if (!active || active.finished) return
+  function cancelGenerationFlow(): Promise<void> {
+    if (!active || active.finished) return Promise.resolve()
     const run = active
     active = null
     cancelPending = true
     run.controller.abort()
     if (run.started) store.stopGeneration('本地已取消，未完成图片可重试')
     // This user-wide endpoint is best effort, not confirmation of a remote stop.
-    void cancelCurrentGeneration()
+    return cancelCurrentGeneration()
       .catch(error => setError(normalizeApiError(error, '远端取消未确认')))
       .finally(() => { cancelPending = false })
   }

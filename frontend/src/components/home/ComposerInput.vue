@@ -1,689 +1,197 @@
 <template>
-  <!-- 创作输入组合框：主题 / 参考内容 / 参考图片 三分区 -->
-  <div class="composer-container">
-    <!-- ① 主题（必填） -->
-    <div class="composer-field">
-      <div class="field-header">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
-        </svg>
-        <span class="field-title">主题</span>
-        <span class="field-badge required">必填</span>
-      </div>
-      <div class="composer-input-wrapper">
-        <textarea
-          ref="textareaRef"
-          :value="modelValue"
-          @input="handleInput"
-          class="composer-textarea"
-          placeholder="一句话描述你想创作的内容"
-          @keydown.enter.prevent="handleEnter"
-          :disabled="loading"
-          rows="1"
-        ></textarea>
-        <button
-          v-if="modelValue"
-          type="button"
-          class="clear-input-btn"
-          title="清空输入"
-          @click="clearTopic"
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-            <line x1="18" y1="6" x2="6" y2="18"></line>
-            <line x1="6" y1="6" x2="18" y2="18"></line>
-          </svg>
-        </button>
-      </div>
-    </div>
-
-    <!-- ② 参考内容（选填） -->
-    <div class="composer-field">
-      <div class="field-header">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a6d3b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-          <polyline points="14 2 14 8 20 8"></polyline>
-          <line x1="16" y1="13" x2="8" y2="13"></line>
-          <line x1="16" y1="17" x2="8" y2="17"></line>
-        </svg>
-        <span class="field-title">参考内容</span>
-        <span class="field-badge optional">选填</span>
-      </div>
-      <div class="ref-input-row">
-        <textarea
-          ref="referenceRef"
-          :value="referenceContent"
-          @input="handleReferenceInput"
-          class="ref-textarea"
-          placeholder="粘贴参考资料、产品卖点、文案素材、笔记内容等…"
-          :disabled="loading"
-          rows="3"
-        ></textarea>
-        <button
-          v-if="referenceContent"
-          type="button"
-          class="clear-input-btn"
-          title="清空输入"
-          @click="clearReference"
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-            <line x1="18" y1="6" x2="6" y2="18"></line>
-            <line x1="6" y1="6" x2="18" y2="18"></line>
-          </svg>
-        </button>
-      </div>
-      <div class="field-footer">
-        <span></span>
-        <span v-if="referenceContent" class="field-count">{{ referenceContent.length }} 字</span>
-      </div>
-    </div>
-
-    <!-- ③ 参考图片（选填，一张或多张） -->
-    <div class="composer-field">
-      <div class="field-header">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-          <circle cx="8.5" cy="8.5" r="1.5"></circle>
-          <polyline points="21 15 16 10 5 21"></polyline>
-        </svg>
-        <span class="field-title">参考图片</span>
-        <span class="field-badge optional">选填</span>
-      </div>
-      <label class="image-upload-card" :class="{ 'has-images': uploadedImages.length > 0 }">
-        <input
-          type="file"
-          accept="image/*"
-          multiple
-          @change="handleImageUpload"
-          :disabled="loading"
-          style="display: none;"
-        />
-        <div v-if="uploadedImages.length > 0" class="image-thumbs">
-          <div
-            v-for="(img, idx) in uploadedImages"
-            :key="idx"
-            class="uploaded-image-item"
-          >
-            <img :src="img.preview" :alt="`参考图 ${idx + 1}`" />
-            <button class="remove-image-btn" type="button" @click.prevent.stop="removeImage(idx)">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="18" y1="6" x2="6" y2="18"></line>
-                <line x1="6" y1="6" x2="18" y2="18"></line>
-              </svg>
-            </button>
-            <span class="image-index">{{ idx + 1 }}</span>
-          </div>
-          <div v-if="uploadedImages.length < 5" class="image-add-tile">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <line x1="12" y1="5" x2="12" y2="19"></line>
-              <line x1="5" y1="12" x2="19" y2="12"></line>
-            </svg>
-            <span>添加照片</span>
-          </div>
+  <div class="creation-composer" :aria-busy="loading">
+    <label for="creation-topic" class="input-label">创作主题</label>
+    <textarea
+      id="creation-topic"
+      :value="modelValue"
+      class="field topic-input"
+      placeholder="例如：上海周末城市漫步，沿途的建筑、街角咖啡与拍照地点"
+      rows="5"
+      :disabled="loading"
+      @input="emit('update:modelValue', ($event.target as HTMLTextAreaElement).value)"
+      @compositionstart="composing = true"
+      @compositionend="composing = false"
+      @keydown="handleKeydown"
+    />
+    <details class="more-settings">
+      <summary><SlidersHorizontal :size="18" aria-hidden="true" />更多设置</summary>
+      <div class="settings-content">
+        <div class="reference-field">
+          <label for="creation-reference" class="input-label">参考内容 <span>（选填）</span></label>
+          <textarea
+            id="creation-reference"
+            :value="referenceContent"
+            class="field reference-input"
+            rows="3"
+            placeholder="参考资料、产品卖点或文案素材"
+            :disabled="loading"
+            @input="emit('update:referenceContent', ($event.target as HTMLTextAreaElement).value)"
+          />
         </div>
-        <div v-else class="image-upload-placeholder">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="3" width="18" height="18" rx="3"></rect>
-            <circle cx="8.5" cy="8.5" r="1.5"></circle>
-            <polyline points="21 15 16 10 5 21"></polyline>
-          </svg>
-          <span>点击上传参考图片</span>
+        <div class="reference-field">
+          <label for="creation-images" class="input-label">参考图片 <span>（选填）</span></label>
+          <p id="image-limits" class="field-note">JPEG、PNG 或 WebP，最多 5 张，每张不超过 10 MiB</p>
+          <input
+            id="creation-images"
+            class="file-input"
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            multiple
+            :aria-describedby="imageError ? 'image-limits image-error' : 'image-limits'"
+            :disabled="loading || uploadedImages.length >= 5"
+            @change="handleImageUpload"
+          />
+          <p v-if="imageError" id="image-error" class="input-error" role="alert">{{ imageError }}</p>
+          <ul v-if="uploadedImages.length" class="image-list">
+            <li v-for="(image, index) in uploadedImages" :key="image.preview" class="reference-image">
+              <img :src="image.preview" :alt="`参考图片：${image.file.name}`" />
+              <div class="image-caption">
+                <span :title="image.file.name">{{ image.file.name }}</span>
+                <button
+                  type="button"
+                  class="icon-button"
+                  :aria-label="`移除参考图片 ${image.file.name}`"
+                  :title="`移除 ${image.file.name}`"
+                  :disabled="loading"
+                  @click="removeImage(index)"
+                ><X :size="18" aria-hidden="true" /></button>
+              </div>
+            </li>
+          </ul>
         </div>
-      </label>
-    </div>
-
-    <!-- 工具栏（生成按钮） -->
-    <div class="composer-toolbar">
-      <div class="toolbar-left"></div>
-      <div class="toolbar-right">
-        <!-- 插槽：可放"生成大纲"提示词选择等 -->
-        <slot name="before-generate" />
-        <button
-          class="btn btn-primary generate-btn"
-          @click="$emit('generate')"
-          :disabled="!modelValue.trim() || loading"
-        >
-          <span v-if="loading" class="spinner-sm"></span>
-          <span>{{ loading ? '处理中' : buttonText }}</span>
-        </button>
+        <slot name="options" />
       </div>
+    </details>
+    <div class="creation-actions">
+      <slot name="before-generate" />
+      <button v-if="loading" type="button" class="btn" :disabled="cancelling" @click="emit('cancel')">
+        <Square :size="16" aria-hidden="true" />{{ cancelling ? '正在取消' : '取消' }}
+      </button>
+      <button
+        type="button"
+        class="btn btn-primary generate-button"
+        :disabled="!modelValue.trim() || loading || disabled"
+        @click="emit('generate')"
+      >
+        <LoaderCircle v-if="loading" :size="18" class="spinning" aria-hidden="true" />
+        <ArrowUpRight v-else :size="18" aria-hidden="true" />
+        {{ loading ? (cancelling ? '等待取消完成' : '正在生成大纲') : buttonText }}
+      </button>
     </div>
-
-    <div v-if="loading" class="loading-hint" role="status" aria-live="polite">
-      请稍后，这一步大概要 15-30 秒左右。
-    </div>
+    <p v-if="loading" class="field-note generation-status" role="status">{{ cancelling ? '正在通知服务端取消…' : '大纲生成中…' }}</p>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onUnmounted } from 'vue'
+import { onUnmounted, ref, watch } from 'vue'
+import { ArrowUpRight, LoaderCircle, SlidersHorizontal, Square, X } from 'lucide-vue-next'
 
-/**
- * 主题输入组合框组件
- *
- * 功能：
- * - 主题文本输入（必填，自动调整高度）
- * - 参考内容输入（选填，支持大段文字）
- * - 参考图片上传（选填，最多5张）
- * - 生成按钮
- */
-
-// 定义上传的图片类型
-interface UploadedImage {
-  file: File
-  preview: string
-}
-
-// 定义 Props
-const props = defineProps<{
+interface UploadedImage { file: File; preview: string }
+const props = withDefaults(defineProps<{
   modelValue: string
   loading: boolean
-  /** 生成按钮文案（可覆盖，如"进入编辑大纲"） */
+  cancelling?: boolean
   buttonText?: string
-  /** 参考内容（选填） */
   referenceContent?: string
-}>()
-
-// 定义 Emits
+  images?: File[]
+  disabled?: boolean
+}>(), { buttonText: '生成大纲', referenceContent: '', disabled: false, cancelling: false })
 const emit = defineEmits<{
   (e: 'update:modelValue', value: string): void
   (e: 'update:referenceContent', value: string): void
   (e: 'generate'): void
+  (e: 'cancel'): void
   (e: 'imagesChange', images: File[]): void
 }>()
-
-// 输入框引用
-const textareaRef = ref<HTMLTextAreaElement | null>(null)
-const referenceRef = ref<HTMLTextAreaElement | null>(null)
-
-// 已上传的图片
+const composing = ref(false)
+const imageError = ref('')
 const uploadedImages = ref<UploadedImage[]>([])
 
-/**
- * 处理输入变化
- */
-function handleInput(event: Event) {
-  const target = event.target as HTMLTextAreaElement
-  emit('update:modelValue', target.value)
-  adjustHeight()
+function handleKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Enter' || (!event.ctrlKey && !event.metaKey)) return
+  if (composing.value || event.isComposing || event.keyCode === 229) return
+  event.preventDefault()
+  if (!props.loading && !props.disabled && props.modelValue.trim()) emit('generate')
 }
 
-/**
- * 处理回车键
- */
-function handleEnter(e: KeyboardEvent) {
-  if (e.shiftKey) return // 允许 Shift+Enter 换行
-  emit('generate')
+function syncPreviews(files: File[]) {
+  const previous = uploadedImages.value
+  const next = files.map(file => previous.find(image => image.file === file)
+    || { file, preview: URL.createObjectURL(file) })
+  previous.filter(image => !next.includes(image)).forEach(image => URL.revokeObjectURL(image.preview))
+  uploadedImages.value = next
 }
+watch(() => props.images, files => {
+  if (files) syncPreviews(files)
+}, { immediate: true, deep: true })
 
-/**
- * 清空主题输入（× 按钮）
- */
-function clearTopic() {
-  emit('update:modelValue', '')
-  adjustHeight()
-}
-
-/**
- * 清空参考内容输入（× 按钮）
- */
-function clearReference() {
-  emit('update:referenceContent', '')
-  adjustReferenceHeight()
-}
-
-/**
- * 处理参考内容输入变化
- */
-function handleReferenceInput(event: Event) {
-  const target = event.target as HTMLTextAreaElement
-  emit('update:referenceContent', target.value)
-  adjustReferenceHeight()
-}
-
-/**
- * 自动调整输入框高度
- */
-function adjustHeight() {
-  const el = textareaRef.value
-  if (!el) return
-
-  el.style.height = 'auto'
-  const newHeight = Math.max(44, Math.min(el.scrollHeight, 120))
-  el.style.height = newHeight + 'px'
-}
-
-/**
- * 自动调整参考内容输入框高度
- */
-function adjustReferenceHeight() {
-  const el = referenceRef.value
-  if (!el) return
-
-  el.style.height = 'auto'
-  const newHeight = Math.max(72, Math.min(el.scrollHeight, 240))
-  el.style.height = newHeight + 'px'
-}
-
-/**
- * 处理图片上传
- */
 function handleImageUpload(event: Event) {
-  const target = event.target as HTMLInputElement
-  if (!target.files) return
-
-  const files = Array.from(target.files)
-  files.forEach((file) => {
-    // 限制最多 5 张图片
-    if (uploadedImages.value.length >= 5) {
-      return
+  const input = event.target as HTMLInputElement
+  if (props.loading) { input.value = ''; return }
+  const files = uploadedImages.value.map(image => image.file)
+  const errors: string[] = []
+  for (const file of Array.from(input.files || [])) {
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      errors.push(`${file.name}：仅支持 JPEG、PNG 或 WebP。`)
+    } else if (file.size > 10 * 1024 * 1024) {
+      errors.push(`${file.name}：文件超过 10 MiB。`)
+    } else if (files.length >= 5) {
+      errors.push(`${file.name}：最多添加 5 张参考图片。`)
+    } else {
+      files.push(file)
     }
-    // 创建预览 URL
-    const preview = URL.createObjectURL(file)
-    uploadedImages.value.push({ file, preview })
-  })
-
-  // 通知父组件
-  emitImagesChange()
-
-  // 清空 input，允许重复选择同一文件
-  target.value = ''
+  }
+  imageError.value = errors.join(' ')
+  syncPreviews(files)
+  emit('imagesChange', files)
+  input.value = ''
 }
 
-/**
- * 移除图片
- */
 function removeImage(index: number) {
-  const img = uploadedImages.value[index]
-  // 释放预览 URL
-  URL.revokeObjectURL(img.preview)
-  uploadedImages.value.splice(index, 1)
-
-  // 通知父组件
-  emitImagesChange()
-}
-
-/**
- * 通知父组件图片变化
- */
-function emitImagesChange() {
-  const files = uploadedImages.value.map(img => img.file)
+  if (props.loading) return
+  const files = uploadedImages.value.map(image => image.file).filter((_, position) => position !== index)
+  syncPreviews(files)
+  imageError.value = ''
   emit('imagesChange', files)
 }
 
-/**
- * 清理所有预览 URL
- */
 function clearPreviews() {
-  uploadedImages.value.forEach(img => URL.revokeObjectURL(img.preview))
+  uploadedImages.value.forEach(image => URL.revokeObjectURL(image.preview))
   uploadedImages.value = []
 }
-
-// 组件卸载时清理
-onUnmounted(() => {
-  clearPreviews()
-})
-
-// 暴露方法给父组件
-defineExpose({
-  clearPreviews
-})
+onUnmounted(clearPreviews)
+defineExpose({ clearPreviews })
 </script>
 
 <style scoped>
-/* 组合框容器 */
-.composer-container {
-  background: white;
-  border-radius: 16px;
-  padding: 18px 18px 14px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
-  border: 1px solid rgba(0, 0, 0, 0.06);
-}
-
-/* ===== 分区通用 ===== */
-.composer-field {
-  padding: 12px 14px;
-  border-radius: 12px;
-}
-
-.composer-field + .composer-field {
-  margin-top: 10px;
-}
-
-/* 主题：浅蓝底 */
-.composer-field:first-of-type {
-  background: #f5f9ff;
-  border: 1px solid #dbe7ff;
-}
-.composer-field:first-of-type:focus-within {
-  border-color: #93c5fd;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08);
-}
-
-/* 参考内容：浅米底 */
-.composer-field:nth-of-type(2) {
-  background: #fbfaf5;
-  border: 1px solid #eee7d3;
-}
-.composer-field:nth-of-type(2):focus-within {
-  border-color: #d9b878;
-  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.08);
-}
-
-/* 参考图片：浅紫底 */
-.composer-field:nth-of-type(3) {
-  background: #faf7ff;
-  border: 1px solid #e8dfff;
-}
-
-/* 分区标题 */
-.field-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-
-.field-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: #4a4a4a;
-}
-
-/* 必填/选填标记 */
-.field-badge {
-  font-size: 11px;
-  padding: 1px 8px;
-  border-radius: 10px;
-  font-weight: 500;
-}
-.field-badge.required {
-  color: #dc2626;
-  background: #fef2f2;
-}
-.field-badge.optional {
-  color: #a8916a;
-  background: #f6efdf;
-}
-
-/* ===== 主题输入 ===== */
-.composer-input-wrapper {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-}
-
-.composer-textarea {
-  flex: 1;
-  border: none;
-  outline: none;
-  background: transparent;
-  font-size: 16px;
-  line-height: 1.6;
-  resize: none;
-  min-height: 40px;
-  max-height: 120px;
-  padding: 4px 0;
-  font-family: inherit;
-  color: var(--text-main, #1a1a1a);
-}
-
-.composer-textarea::placeholder {
-  color: #9bb1d8;
-}
-
-.composer-textarea:disabled {
-  background: transparent;
-  color: #999;
-}
-
-/* 清空按钮（主题/参考内容通用） */
-.clear-input-btn {
-  flex-shrink: 0;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  border: none;
-  background: rgba(0, 0, 0, 0.08);
-  color: #999;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-top: 8px;
-  transition: all 0.2s;
-}
-
-.clear-input-btn:hover {
-  background: rgba(0, 0, 0, 0.16);
-  color: #555;
-}
-
-/* ===== 参考内容输入 ===== */
-.ref-input-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-}
-.ref-textarea {
-  width: 100%;
-  border: none;
-  outline: none;
-  background: transparent;
-  font-size: 14px;
-  line-height: 1.7;
-  resize: vertical;
-  font-family: inherit;
-  color: #3b3226;
-}
-
-.ref-textarea::placeholder {
-  color: #b3a48a;
-}
-
-.ref-textarea:disabled {
-  background: transparent;
-  color: #999;
-}
-
-/* 分区脚注 */
-.field-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: 6px;
-}
-
-.field-hint {
-  font-size: 12px;
-  color: #a8916a;
-}
-
-.field-count {
-  font-size: 12px;
-  color: #c0ab86;
-  font-variant-numeric: tabular-nums;
-}
-
-/* ===== 参考图片上传卡片 ===== */
-.image-upload-card {
-  display: block;
-  cursor: pointer;
-  border: 1.5px dashed #c9b8f0;
-  border-radius: 10px;
-  background: rgba(124, 58, 237, 0.03);
-  transition: border-color 0.2s, background 0.2s;
-}
-
-.image-upload-card:hover {
-  border-color: #8b5cf6;
-  background: rgba(124, 58, 237, 0.06);
-}
-
-.image-upload-card.has-images {
-  border-style: solid;
-  border-color: #ddd2f2;
-}
-
-.image-upload-placeholder {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 10px 16px;
-  color: #8b5cf6;
-  font-size: 13px;
-}
-
-/* 缩略图网格 */
-.image-thumbs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  padding: 12px;
-}
-
-.uploaded-image-item {
-  position: relative;
-  width: 64px;
-  height: 64px;
-  border-radius: 8px;
-  overflow: hidden;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-  flex-shrink: 0;
-}
-
-.uploaded-image-item img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.image-index {
-  position: absolute;
-  left: 4px;
-  bottom: 4px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 3px;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.55);
-  color: white;
-  font-size: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.remove-image-btn {
-  position: absolute;
-  top: 3px;
-  right: 3px;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.6);
-  border: none;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: white;
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-
-.uploaded-image-item:hover .remove-image-btn {
-  opacity: 1;
-}
-
-.remove-image-btn:hover {
-  background: var(--primary, #ff2442);
-}
-
-/* 添加照片格子 */
-.image-add-tile {
-  width: 64px;
-  height: 64px;
-  border-radius: 8px;
-  border: 1.5px dashed #c9b8f0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 2px;
-  color: #8b5cf6;
-  font-size: 11px;
-  flex-shrink: 0;
-  transition: all 0.2s;
-}
-
-.image-add-tile:hover {
-  background: rgba(124, 58, 237, 0.06);
-}
-
-/* ===== 工具栏 ===== */
-.composer-toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px solid #f0f0f0;
-}
-
-.toolbar-left {
-  display: flex;
-  gap: 8px;
-}
-
-.toolbar-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  justify-content: flex-end;
-  width: 100%;
-}
-
-/* 生成按钮 */
-.generate-btn {
-  min-width: 112px;
-  padding: 10px 24px;
-  font-size: 15px;
-  border-radius: 100px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.generate-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.loading-hint {
-  margin-top: 12px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: rgba(255, 36, 66, 0.06);
-  color: var(--text-sub, #666);
-  font-size: 14px;
-  line-height: 1.5;
-  text-align: right;
-}
-
-/* 加载动画 */
-.spinner-sm {
-  width: 16px;
-  height: 16px;
-  border: 2px solid currentColor;
-  border-top-color: transparent;
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
+.creation-composer { min-width: 0; }
+.input-label { display: block; margin-bottom: 10px; color: #252935; font-size: 16px; font-weight: 600; }
+.input-label span, .field-note { color: #656b78; font-weight: 400; }
+.topic-input, .reference-input { display: block; padding: 16px; font: inherit; font-size: 16px; line-height: 1.7; resize: vertical; background: white; border: 1px solid #d6dae2; border-radius: 8px; }
+.topic-input { min-height: 172px; }
+.topic-input:focus, .reference-input:focus { outline: 2px solid #315ee8; outline-offset: 2px; }
+.more-settings { margin-top: 12px; border-bottom: 1px solid #e2e5eb; }
+summary { display: flex; align-items: center; gap: 10px; min-height: 48px; width: fit-content; cursor: pointer; color: #505765; font-size: 16px; list-style: none; }
+summary::-webkit-details-marker { display: none; }
+summary::after { content: '+'; margin-left: 12px; }
+details[open] > summary::after { content: '−'; }
+summary:focus-visible { outline: 2px solid #315ee8; outline-offset: 2px; }
+.settings-content { display: grid; gap: 24px; padding: 16px 0 24px; }
+.reference-field { min-width: 0; }
+.field-note { margin: 6px 0 12px; font-size: 16px; line-height: 1.6; }
+.file-input { display: block; width: 100%; min-width: 0; min-height: 44px; font-size: 16px; color: #505765; }
+.file-input::file-selector-button { min-height: 44px; padding: 8px 14px; margin-right: 12px; background: white; color: #252935; border: 1px solid #d6dae2; border-radius: 6px; cursor: pointer; }
+.input-error { margin-top: 8px; color: #a62b35; font-size: 16px; overflow-wrap: anywhere; }
+.image-list { list-style: none; padding: 0; margin: 16px 0 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; }
+.reference-image { min-width: 0; }
+.reference-image > img { width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: #f7f8fa; border: 1px solid #e2e5eb; border-radius: 6px; }
+.image-caption { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.image-caption > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; }
+.icon-button { width: 44px; height: 44px; flex: 0 0 44px; }
+.creation-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+.generate-button { background: #315ee8; color: white; min-height: 44px; border-radius: 6px; }
+.generation-status { text-align: right; }
+.spinning { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinning { animation: none; } }
 </style>

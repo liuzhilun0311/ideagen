@@ -24,12 +24,14 @@ import {
 interface AuthState {
   token: string
   user: StoredUser | null
+  sessionRevision: number
 }
 
 export const useAuthStore = defineStore('auth', {
   state: (): AuthState => ({
     token: getToken(),
     user: getUser(),
+    sessionRevision: 0,
   }),
 
   getters: {
@@ -42,6 +44,7 @@ export const useAuthStore = defineStore('auth', {
     async login(username: string, password: string) {
       const res = await apiLogin(username, password)
       if (res.success && res.token && res.user) {
+        this.sessionRevision += 1
         this.token = res.token
         this.user = res.user as StoredUser
         setToken(res.token)
@@ -61,14 +64,20 @@ export const useAuthStore = defineStore('auth', {
     },
 
     async logout() {
+      const token = this.token
+      const revision = this.sessionRevision
       try {
-        await apiLogout()
+        if (token) {
+          await apiLogout(token)
+        }
       } catch {
         // 忽略注销接口错误
       }
+      if (this.sessionRevision !== revision || this.token !== token) return
+      this.sessionRevision += 1
       this.token = ''
       this.user = null
-      clearAuth()
+      if (getToken() === token) clearAuth()
     },
 
     /** 启动时校验 token 有效性（过期则清除登录态） */

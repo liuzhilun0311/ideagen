@@ -6,6 +6,7 @@ import {
   authHeaders
 } from './client'
 import { getToken } from './token'
+import { withImageToken } from '../utils/imageUrl'
 import type {
   FinishEvent,
   Page,
@@ -34,11 +35,7 @@ export function getImageUrl(taskId: string, filename: string, thumbnail: boolean
  * 因为 <img> 标签无法携带 Authorization 请求头，只能通过 query 参数传 token。
  */
 export function withToken(url: string): string {
-  if (!url) return url
-  const token = getToken()
-  if (!token || url.includes('token=')) return url
-  const sep = url.includes('?') ? '&' : '?'
-  return `${url}${sep}token=${encodeURIComponent(token)}`
+  return withImageToken(url, getToken())
 }
 
 export async function regenerateImage(
