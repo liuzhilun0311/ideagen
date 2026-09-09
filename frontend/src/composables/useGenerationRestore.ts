@@ -1,4 +1,5 @@
 import { useGeneratorStore } from '../stores/generator'
+import { normalizeApiError } from '../utils/errors'
 import {
   createHistory,
   getHistory,
@@ -62,21 +63,24 @@ export function useGenerationRestore() {
     return true
   }
 
-  async function ensureRecord() {
-    if (store.recordId) return
+  async function ensureRecord(): Promise<string> {
+    if (store.recordId) return store.recordId
 
-    console.warn('警告: recordId 不存在，尝试创建历史记录作为兜底')
     try {
       const result = await createHistory(store.topic, {
         raw: store.outline.raw,
         pages: store.outline.pages
       })
-      if (result.success && result.record_id) {
-        store.setRecordId(result.record_id)
-        console.log('兜底创建历史记录成功:', store.recordId)
+      if (!result.success || !result.record_id) {
+        throw normalizeApiError(
+          result.error || result.error_message || '历史记录未返回 ID',
+          '无法创建作品记录'
+        )
       }
-    } catch (e) {
-      console.error('兜底创建历史记录失败:', e)
+      store.setRecordId(result.record_id)
+      return result.record_id
+    } catch (error) {
+      throw normalizeApiError(error, '无法创建作品记录')
     }
   }
 
