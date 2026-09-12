@@ -1,8 +1,12 @@
 <template>
   <div class="home-page">
     <header class="home-heading">
-      <h1>新建创作</h1>
-      <p>从一个想法开始。</p>
+      <div>
+        <p class="eyebrow">创作工作台</p>
+        <h1>新建创作</h1>
+        <p>输入主题，先生成一套可编辑的大纲。</p>
+      </div>
+      <span class="heading-hint">支持文字、参考资料与图片</span>
     </header>
     <ComposerInput
       v-model="store.topic"
@@ -17,9 +21,10 @@
       @cancel="handleCancel"
     >
       <template #options>
-        <div class="model-settings">
+        <OutlineOptions id="outline" :disabled="session.busy" />
+        <div class="model-settings" aria-label="模型设置">
           <div v-for="group in settingGroups" :key="group.kind" class="model-group">
-            <label :for="`${group.kind}-model`">{{ group.label }}模型</label>
+            <label :for="`${group.kind}-model`">{{ group.label }}模型 <HelpTip text="模型决定生成大纲时使用的文本模型，列表来自模型设置中已启用的文本模型。" /></label>
             <select
               :id="`${group.kind}-model`"
               v-model="store[group.modelKey]"
@@ -29,19 +34,10 @@
               <option v-if="!group.models.length" value="">暂无可用模型</option>
               <option v-for="model in group.models" :key="model.name" :value="model.name">{{ model.label }}</option>
             </select>
-            <label :for="`${group.kind}-prompt`">{{ group.label }}提示词</label>
-            <select
-              :id="`${group.kind}-prompt`"
-              v-model="store[group.promptKey]"
-              class="field"
-              :disabled="session.busy || optionsLoading || !!optionsError"
-            >
-              <option value="">系统默认</option>
-              <option v-for="prompt in prompts[group.kind]" :key="prompt.name" :value="prompt.name">{{ prompt.name }}</option>
-            </select>
           </div>
         </div>
       </template>
+      <template #before-generate><OutlinePromptInspector :busy="session.busy" /></template>
     </ComposerInput>
     <div class="home-feedback" aria-live="polite">
       <p v-if="optionsLoading" role="status">正在加载创作选项…</p>
@@ -50,7 +46,7 @@
         <button type="button" class="btn" :disabled="generating" @click="loadOptions"><RefreshCw :size="16" aria-hidden="true" />重试</button>
       </div>
       <p v-else-if="!modelsReady">
-        尚未配置可用的{{ !textModels.length ? '文字' : '图片' }}模型。
+        尚未配置可用的大纲模型。
         <RouterLink to="/settings">前往设置</RouterLink>
       </p>
       <p v-if="otherTaskBusy" role="status">已有任务正在生成，请先返回工作台完成或取消。<RouterLink to="/workspace">返回工作台</RouterLink></p>
@@ -88,6 +84,9 @@ import { computed, onActivated, onBeforeUnmount, onMounted, ref, watch } from 'v
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowUpRight, RefreshCw } from 'lucide-vue-next'
 import ComposerInput from '../components/home/ComposerInput.vue'
+import OutlineOptions from '../components/workspace/OutlineOptions.vue'
+import OutlinePromptInspector from '../components/workspace/OutlinePromptInspector.vue'
+import HelpTip from '../components/common/HelpTip.vue'
 import { useCreationOptions } from '../composables/useCreationOptions'
 import { useOutlineGeneration } from '../composables/useOutlineGeneration'
 import { inspirations } from '../features/templates/catalog'
@@ -99,7 +98,7 @@ const store = useGeneratorStore()
 const router = useRouter()
 const route = useRoute()
 const session = useStudioSession()
-const { loading: optionsLoading, refreshNeeded, error: optionsError, textModels, imageModels, prompts, load: loadOptions } = useCreationOptions()
+const { loading: optionsLoading, refreshNeeded, error: optionsError, textModels, load: loadOptions } = useCreationOptions()
 const { generating, cancelling, error: generationError, start, cancel } = useOutlineGeneration()
 const localError = ref<AppError | null>(null)
 const notice = ref('')
@@ -113,13 +112,9 @@ watch([() => session.busy, optionsLoading, refreshNeeded], ([isBusy, isLoading, 
 })
 const modelsReady = computed(() =>
   textModels.value.some(model => model.name === store.outlineModelName)
-  && textModels.value.some(model => model.name === store.contentModelName)
-  && imageModels.value.some(model => model.name === store.imageModelName),
 )
 const settingGroups = computed(() => [
   { kind: 'outline', label: '大纲', modelKey: 'outlineModelName', promptKey: 'outlinePromptName', models: textModels.value },
-  { kind: 'image', label: '图片', modelKey: 'imageModelName', promptKey: 'imagePromptName', models: imageModels.value },
-  { kind: 'content', label: '文案', modelKey: 'contentModelName', promptKey: 'contentPromptName', models: textModels.value },
 ] as const)
 
 function chooseInspiration(topic: string) {
@@ -184,20 +179,22 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', guardUnload))
 </script>
 
 <style scoped>
-.home-page { width: 100%; max-width: 960px; min-width: 0; margin: 0 auto; padding: 40px 24px 56px; color: #252935; }
-.home-heading { margin-bottom: 28px; }
-.home-heading h1 { margin: 0; font-size: 28px; line-height: 1.3; font-weight: 650; letter-spacing: 0; }
-.home-heading p { margin: 10px 0 0; color: #656b78; font-size: 16px; }
-.model-settings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+.home-page { width: 100%; max-width: 1080px; min-width: 0; margin: 0 auto; padding: 36px 28px 64px; color: #252935; }
+.home-heading { display:flex; align-items:flex-end; justify-content:space-between; gap:24px; margin-bottom:28px; }
+.eyebrow { margin:0 0 8px !important; color:#315ee8 !important; font-size:12px !important; font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
+.home-heading h1 { margin: 0; font-size: 30px; line-height: 1.25; font-weight: 650; letter-spacing: 0; }
+.home-heading p:not(.eyebrow) { margin: 9px 0 0; color: #656b78; font-size: 15px; }
+.heading-hint { flex:0 0 auto; color:#656b78; font-size:13px; }
+.model-settings { display: grid; grid-template-columns: 1fr; gap: 12px; }
 .model-group { display: grid; gap: 10px; min-width: 0; align-content: start; }
-.model-group label { font-size: 16px; font-weight: 500; }
-.model-group select { min-width: 0; max-width: 100%; font-size: 16px; text-overflow: ellipsis; }
+.model-group label { display:flex; align-items:center; gap:7px; font-size:13px; font-weight:400; }
+.model-group select { width:100%; min-width:0; max-width:100%; min-height:44px; padding:10px; font-size:14px; text-overflow:ellipsis; }
 .model-group label:not(:first-child) { margin-top: 6px; }
 .home-feedback { font-size: 16px; line-height: 1.65; color: #656b78; overflow-wrap: anywhere; }
 .home-feedback:has(> *) { margin-top: 18px; }
 .home-feedback a { color: #315ee8; display: inline-flex; align-items: center; min-height: 44px; text-decoration: underline; }
 .feedback-error { color: #a62b35; }
-.inspiration-section { margin-top: 44px; }
+.inspiration-section { margin-top: 52px; padding-top: 28px; border-top: 1px solid #e2e5eb; }
 .section-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 20px; margin-bottom: 18px; }
 .section-heading h2 { margin: 0; font-size: 20px; line-height: 1.4; }
 .section-heading > span { color: #656b78; font-size: 16px; }
@@ -213,6 +210,8 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', guardUnload))
 .inspiration-title svg { flex-shrink: 0; }
 @media (max-width: 700px) {
   .home-page { padding: 24px 16px 40px; }
+  .home-heading { align-items:flex-start; flex-direction:column; gap:12px; margin-bottom:24px; }
+  .heading-hint { font-size:12px; }
   .home-heading { margin-bottom: 24px; }
   .model-settings { grid-template-columns: 1fr; gap: 24px; }
   .inspiration-grid { grid-template-columns: 1fr; gap: 16px; }

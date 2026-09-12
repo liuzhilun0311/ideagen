@@ -1,5 +1,12 @@
 <template>
-  <div class="creation-composer" :aria-busy="loading">
+  <section class="creation-composer" :aria-busy="loading" aria-labelledby="composer-heading">
+    <div class="composer-heading">
+      <div>
+        <h2 id="composer-heading">告诉我你想创作什么</h2>
+        <p>主题越具体，生成的大纲越容易直接使用。</p>
+      </div>
+      <kbd>⌘ / Ctrl + Enter</kbd>
+    </div>
     <label for="creation-topic" class="input-label">创作主题</label>
     <textarea
       id="creation-topic"
@@ -79,7 +86,7 @@
       </button>
     </div>
     <p v-if="loading" class="field-note generation-status" role="status">{{ cancelling ? '正在通知服务端取消…' : '大纲生成中…' }}</p>
-  </div>
+  </section>
 </template>
 
 <script setup lang="ts">
@@ -165,19 +172,30 @@ defineExpose({ clearPreviews })
 </script>
 
 <style scoped>
-.creation-composer { min-width: 0; }
+.creation-composer { min-width: 0; padding: 24px; background:#fff; border:1px solid #e2e5eb; border-radius:8px; }
+.composer-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; margin-bottom:20px; }
+.composer-heading h2 { margin:0; font-size:18px; line-height:1.4; }
+.composer-heading p { margin:6px 0 0; color:#656b78; font-size:13px; }
+kbd { flex:0 0 auto; padding:4px 7px; color:#656b78; background:#f7f8fa; border:1px solid #e2e5eb; border-radius:4px; font-size:12px; }
 .input-label { display: block; margin-bottom: 10px; color: #252935; font-size: 16px; font-weight: 600; }
 .input-label span, .field-note { color: #656b78; font-weight: 400; }
 .topic-input, .reference-input { display: block; padding: 16px; font: inherit; font-size: 16px; line-height: 1.7; resize: vertical; background: white; border: 1px solid #d6dae2; border-radius: 8px; }
 .topic-input { min-height: 172px; }
 .topic-input:focus, .reference-input:focus { outline: 2px solid #315ee8; outline-offset: 2px; }
-.more-settings { margin-top: 12px; border-bottom: 1px solid #e2e5eb; }
+.more-settings { margin-top: 18px; border-top: 1px solid #e2e5eb; border-bottom: 1px solid #e2e5eb; }
 summary { display: flex; align-items: center; gap: 10px; min-height: 48px; width: fit-content; cursor: pointer; color: #505765; font-size: 16px; list-style: none; }
 summary::-webkit-details-marker { display: none; }
 summary::after { content: '+'; margin-left: 12px; }
 details[open] > summary::after { content: '−'; }
 summary:focus-visible { outline: 2px solid #315ee8; outline-offset: 2px; }
 .settings-content { display: grid; gap: 24px; padding: 16px 0 24px; }
+@media (min-width: 860px) {
+  .settings-content { grid-template-columns: minmax(0, 1fr) minmax(260px, 320px); align-items: start; column-gap: 32px; }
+  .settings-content > .reference-field { grid-column: 1; }
+  .settings-content :deep(.outline-options), .settings-content :deep(.model-settings) { grid-column: 2; }
+  .settings-content :deep(.outline-options) { grid-row: 1 / span 2; }
+  .settings-content :deep(.model-settings) { grid-row: 3; }
+}
 .reference-field { min-width: 0; }
 .field-note { margin: 6px 0 12px; font-size: 16px; line-height: 1.6; }
 .file-input { display: block; width: 100%; min-width: 0; min-height: 44px; font-size: 16px; color: #505765; }
@@ -195,4 +213,9 @@ summary:focus-visible { outline: 2px solid #315ee8; outline-offset: 2px; }
 .spinning { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spinning { animation: none; } }
+@media (max-width: 700px) {
+  .creation-composer { padding: 18px 16px; }
+  .composer-heading { flex-direction:column; gap:10px; }
+  kbd { display:none; }
+}
 </style>
