@@ -4,9 +4,11 @@
     <main v-if="isLoginPage" id="main-content" tabindex="-1"><RouterView /></main>
     <template v-else>
       <header class="studio-header">
-        <button type="button" class="brand" aria-label="IdeaGen 创作首页" @click="navTo('home')">
+        <div class="header-brand">
+          <button type="button" class="brand" aria-label="IdeaGen 创作首页" @click="navTo('home')">
           <Layers2 :size="25" aria-hidden="true" /><span>IdeaGen</span>
-        </button>
+          </button>
+        </div>
         <button ref="menuToggle" type="button" class="icon-button menu-toggle"
           :aria-expanded="menuOpen" aria-controls="primary-navigation"
           :aria-label="menuOpen ? '关闭导航菜单' : '打开导航菜单'"
@@ -23,7 +25,7 @@
               <component :is="item.icon" :size="18" aria-hidden="true" />{{ item.label }}
             </button>
           </nav>
-          <div class="header-user">
+          <div class="header-user" aria-label="账户操作">
             <span class="user-avatar" aria-hidden="true">{{ avatarChar }}</span>
             <span class="user-name" :title="authStore.username">{{ authStore.username }}</span>
             <button class="icon-button logout-btn" type="button" title="退出登录" aria-label="退出登录" @click="handleLogout">
@@ -33,8 +35,9 @@
         </div>
       </header>
       <main id="main-content" class="layout-main" tabindex="-1">
-        <div v-if="session.busy || session.notice" class="creation-status" role="status">
-          <span>{{ session.notice || '创作任务进行中' }}</span>
+        <div v-if="session.busy || session.notice" class="creation-status" role="status" aria-live="polite">
+          <span class="status-indicator" :class="{ busy: session.busy }" aria-hidden="true"></span>
+          <span class="status-message">{{ session.notice || '创作任务进行中' }}</span>
           <button v-if="!isWorkflow(route.path) && route.path !== '/'" type="button" class="status-link" @click="navTo('home')">返回创作</button>
           <button v-if="!session.busy" type="button" class="icon-button" title="关闭提示" aria-label="关闭创作提示" @click="session.notice = ''"><X :size="16" /></button>
         </div>
@@ -59,7 +62,7 @@ const router = useRouter()
 const authStore = useAuthStore()
 const genStore = useGeneratorStore()
 const session = useStudioSession()
-const creationPath = computed(() => genStore.outline.pages.length ? '/workspace' : '/')
+const creationPath = computed(() => genStore.outline.pages.length ? session.workspacePath : '/')
 const isLoginPage = computed(() => route.path === '/login')
 const menuOpen = ref(false)
 const menuToggle = ref<HTMLButtonElement | null>(null)
@@ -92,6 +95,7 @@ function closeMenu(restoreFocus = false) {
 watch(() => route.fullPath, (path) => {
   closeMenu()
   if (route.path === '/login') return
+  if (route.path === '/workspace' || route.path === '/workspace/copy') session.workspacePath = route.path
   const section = sectionOf(route.path)
   // Workflow routes depend on the current draft, so remember the section landing page.
   lastRouteBySection[section] = isWorkflow(route.path) ? DEFAULT_ROUTES[section] : path
@@ -155,20 +159,29 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.creation-status { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; min-height:44px; margin-bottom:16px; padding:0 12px; border-left:3px solid var(--primary); background:#eef3ff; font-size:14px; }
-.creation-status>.icon-button { margin-left:auto; }
-.status-link { background:none; border:0; color:var(--primary); font:inherit; min-height:44px; text-decoration:underline; }
+.creation-status {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+  min-height: 48px; margin: 0 auto 16px; padding: 4px 12px;
+  border: 1px solid #d8e2ff; border-left: 3px solid var(--primary);
+  background: #f5f7ff; color: var(--text-main); font-size: 14px;
+}
+.status-indicator { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--success); }
+.status-indicator.busy { background: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
+.status-message { min-width: 0; }
+.creation-status>.icon-button { margin-left: auto; }
+.status-link { min-height: 44px; padding: 8px 4px; background: none; border: 0; color: var(--primary); font: inherit; text-decoration: underline; cursor: pointer; }
 .studio-header {
   position: fixed; inset: 0 0 auto; height: var(--header-height); z-index: 100;
-  display: flex; align-items: center; gap: 40px; padding: 0 32px;
+  display: flex; align-items: center; gap: 24px; padding: 0 32px;
   background: var(--bg-card); border-bottom: 1px solid var(--border-color);
 }
+.header-brand { display: flex; align-items: center; flex: 0 0 auto; }
 .brand {
   display: inline-flex; align-items: center; gap: 10px; min-height: 44px;
   border: 0; background: transparent; font-size: 22px; font-weight: 700; cursor: pointer; flex-shrink: 0;
 }
 .brand svg { color: var(--primary); }
-.header-menu { display: flex; align-items: center; flex: 1; min-width: 0; gap: 20px; }
+.header-menu { display: flex; align-items: center; flex: 1; min-width: 0; gap: 16px; }
 .nav-menu { display: flex; align-items: center; gap: 4px; }
 .nav-item {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
@@ -177,6 +190,7 @@ onUnmounted(() => {
 }
 .nav-item:hover { background: var(--bg-body); color: var(--text-main); }
 .nav-item.active { background: var(--primary-light); color: var(--primary); font-weight: 600; }
+.nav-item:focus-visible, .brand:focus-visible, .status-link:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .header-user { margin-left: auto; display: flex; align-items: center; gap: 10px; min-width: 0; }
 .user-avatar {
   width: 32px; height: 32px; flex: 0 0 32px; border-radius: 50%;
@@ -193,9 +207,9 @@ onUnmounted(() => {
   .studio-header { padding: 0 16px; }
   .menu-toggle { display: inline-flex; }
   .header-menu {
-    display: none; position: absolute; top: 64px; left: 0; right: 0;
-    padding: 16px; background: var(--bg-card); border-bottom: 1px solid var(--border-color);
-    max-height: calc(100dvh - 64px); overflow-y: auto;
+    display: none; position: absolute; top: var(--header-height); left: 0; right: 0;
+    padding: 12px 16px 20px; background: var(--bg-card); border-bottom: 1px solid var(--border-color);
+    box-shadow: 0 8px 20px rgb(15 23 42 / 8%); max-height: calc(100dvh - var(--header-height)); overflow-y: auto;
   }
   .header-menu.is-open { display: flex; flex-direction: column; align-items: stretch; }
   .nav-menu { flex-direction: column; align-items: stretch; }
@@ -203,5 +217,7 @@ onUnmounted(() => {
   .header-user { margin-left: 0; padding-top: 12px; border-top: 1px solid var(--border-color); }
   .user-name { display: block; max-width: none; flex: 1; }
   .logout-btn { margin-left: auto; }
+  .creation-status { margin-bottom: 12px; padding-inline: 10px; }
+  .status-message { flex: 1 1 180px; }
 }
 </style>
