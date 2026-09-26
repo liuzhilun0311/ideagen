@@ -29,6 +29,9 @@ INSTALLED_APPS = [
     'generation',
     'providers',
     'prompts',
+    'library',
+    'postprocessing',
+    'reference_assets',
 ]
 
 MIDDLEWARE = [
@@ -72,6 +75,12 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': DATA_DIR / 'db.sqlite3',
+        'OPTIONS': {
+            # Generation workers and history syncs can overlap briefly.
+            # Let SQLite wait instead of failing immediately on a write lock.
+            'timeout': 60,
+            'transaction_mode': 'IMMEDIATE',
+        },
     }
 }
 
@@ -114,3 +123,8 @@ OUTPUT_ROOT = PROJECT_ROOT / 'output'
 USER_CONFIGS_ROOT = PROJECT_ROOT / 'user_configs'
 for _p in (HISTORY_ROOT, OUTPUT_ROOT, USER_CONFIGS_ROOT):
     _p.mkdir(parents=True, exist_ok=True)
+
+# A lease must outlive the bounded script invocation and publication work.
+POSTPROCESSING_TIMEOUT_SECONDS = 300
+POSTPROCESSING_LEASE_SECONDS = 360
+POSTPROCESSING_MAX_ATTEMPTS = 3
