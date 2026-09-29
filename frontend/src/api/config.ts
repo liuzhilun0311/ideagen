@@ -2,6 +2,7 @@ import axios from 'axios'
 import { API_BASE_URL } from './client'
 import type { Config } from './types'
 import type { AppError } from '../utils/errors'
+import type { TextApiProtocol } from '../utils/textProtocol'
 
 export async function getConfig(): Promise<{
   success: boolean
@@ -29,9 +30,12 @@ export async function testConnection(config: {
   api_key?: string
   base_url?: string
   endpoint_type?: string
+  api_protocol?: TextApiProtocol
   model: string
 }): Promise<{
   success: boolean
+  warning?: boolean
+  status?: string
   message?: string
   error?: AppError | string
   error_message?: string

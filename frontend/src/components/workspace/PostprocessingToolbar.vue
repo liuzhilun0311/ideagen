@@ -13,7 +13,7 @@ const emit = defineEmits<{
   process: [indices: number[], strength: ProcessingStrength, force: boolean]
   preferences: [automatic: boolean, strength: ProcessingStrength]
 }>()
-const strength = ref<ProcessingStrength>('light')
+const strength = ref<ProcessingStrength>('medium')
 const automatic = ref(true)
 watch(() => props.preferences, value => {
   if (!value || props.savingPreferences) return
@@ -23,7 +23,7 @@ watch(() => props.preferences, value => {
 watch(() => props.savingPreferences, (saving, previous) => {
   if (previous && !saving) {
     automatic.value = props.preferences?.automatic ?? true
-    strength.value = props.preferences?.strength || 'light'
+    strength.value = props.preferences?.strength || 'medium'
   }
 })
 const isRunning = (page: ProcessingPage) => ['queued', 'processing'].includes(page.status)
@@ -51,10 +51,10 @@ function savePreferences() {
           <option value="light">轻度</option><option value="medium">中度</option><option value="heavy">重度</option>
         </select>
       </label>
-      <button class="btn btn-secondary" :disabled="submitting || savingPreferences || !pending.length" @click="process()">
+      <button class="btn btn-secondary process-pending" :disabled="submitting || savingPreferences || !pending.length" @click="process()">
         <WandSparkles :size="16" />全部去AI化 {{ pending.length }} 张
       </button>
-      <button class="btn btn-secondary" :disabled="submitting || savingPreferences || !pages.some(page => !isRunning(page))" @click="process(true)">
+      <button class="btn btn-secondary process-again" :disabled="submitting || savingPreferences || !pages.some(page => !isRunning(page))" @click="process(true)">
         <RotateCw :size="16" />重新去AI化 {{ pages.length }} 张
       </button>
       <button v-if="failed.length" class="btn btn-secondary" :disabled="submitting || savingPreferences" @click="process(false, true)">

@@ -8,6 +8,7 @@ import requests
 
 from .image_provider_policy import ImageProviderPolicy
 from .image_response_extractor import ImageResponseExtractor
+from ..diagnostics import upstream_post
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +62,10 @@ class ImageApiClient:
         while True:
             try:
                 logger.debug(f"{label} 请求: {url}")
-                response = self.session.post(
+                response = upstream_post(
+                    self.session.post,
                     url,
+                    diagnostic_secret=self.policy.api_key,
                     headers=self._headers(),
                     json=request_payload,
                     timeout=self.timeout,

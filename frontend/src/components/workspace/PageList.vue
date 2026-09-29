@@ -19,7 +19,7 @@ defineEmits<{
   remove: [index: number]
   add: []
 }>()
-const labels: Record<Page['type'], string> = { cover: '封面', content: '内容', summary: '总结' }
+const labels: Record<Page['type'], string> = { cover: '封面', content: '内容', summary: '总结', infographic: '信息图' }
 const processingLabels = { idle: '未处理', queued: '排队中', processing: '处理中', done: '已处理', error: '处理失败' }
 function processingPage(index: number) { return props.processingPages?.find(page => page.index === index) }
 function thumbnail(index: number) {

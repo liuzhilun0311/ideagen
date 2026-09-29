@@ -1,7 +1,8 @@
 <template>
   <!-- 服务商列表表格 -->
-  <div class="provider-table">
+  <div class="provider-table" data-reorder-list>
     <div class="table-header">
+      <div class="col-reorder">排序</div>
       <div class="col-status">状态</div>
       <div class="col-name">名称</div>
       <div class="col-provider">服务商</div>
@@ -10,15 +11,25 @@
       <div class="col-actions">操作</div>
     </div>
     <div
-      v-for="(provider, name) in providers"
+      v-for="({ name, provider }, index) in orderedProviders"
       :key="name"
+      :data-reorder-id="name"
       class="table-row-wrap"
       :class="{ active: activeProvider === name }"
     >
       <div class="table-row">
+        <ReorderControls
+          :id="name"
+          :index="index"
+          :total="orderedProviders.length"
+          :disabled="!!busy"
+          @move="direction => moveAdjacent(index, direction)"
+          @drop="target => moveTo(name, target)"
+        />
         <div class="col-status">
           <button
             class="toggle-switch"
+            :disabled="busy"
             :class="{ on: provider.enabled !== false }"
             @click="$emit('activate', name)"
             :title="provider.enabled !== false ? '点击停用（创作中心不可选）' : '点击激活（创作中心可选）'"
@@ -30,7 +41,7 @@
           <span class="provider-name">{{ provider.display_name || name }}</span>
         </div>
         <div class="col-provider">
-          <span class="provider-code">{{ name }}</span>
+          <span class="provider-code">{{ provider.provider_label || name }}</span>
         </div>
         <div class="col-model">
           <span class="model-name">{{ provider.model }}</span>
@@ -41,20 +52,24 @@
           </span>
         </div>
         <div class="col-actions">
-          <button class="btn-icon" @click="$emit('test', name, provider)" title="测试连接">
+          <button class="btn-icon" :disabled="busy" @click="$emit('test', name, provider)" title="测试连接">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
             </svg>
           </button>
-          <button class="btn-icon" @click="$emit('edit', name, provider)" title="编辑">
+          <button class="btn-icon" :disabled="busy" @click="$emit('edit', name, provider)" title="编辑">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
               <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
             </svg>
           </button>
+          <button class="btn-icon" :disabled="busy" @click="$emit('copy', name)" title="复制模型" aria-label="复制模型">
+            <Copy :size="16" />
+          </button>
           <button
             v-if="canConfigureUsers"
             class="btn-icon users"
+            :disabled="busy"
             @click="$emit('users', name, provider)"
             title="配置用户"
           >
@@ -67,6 +82,7 @@
           </button>
           <button
             class="btn-icon danger"
+            :disabled="busy"
             @click="$emit('delete', name)"
             title="删除"
           >
@@ -93,6 +109,9 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+import { Copy } from 'lucide-vue-next'
+import ReorderControls from '../common/ReorderControls.vue'
 /**
  * 服务商列表表格组件
  *
@@ -104,6 +123,7 @@
 
 // 服务商类型定义
 interface ProviderItem {
+  provider_label?: string
   type: string
   model: string
   display_name?: string
@@ -120,16 +140,37 @@ const props = defineProps<{
   providers: Record<string, ProviderItem>
   activeProvider: string
   canConfigureUsers?: boolean
+  order?: string[]
+  busy?: boolean
 }>()
 
 // 定义 Emits
-defineEmits<{
+const emit = defineEmits<{
+  (e: 'copy', name: string): void
+  (e: 'move', source: string, target: string): void
   (e: 'activate', name: string): void
   (e: 'edit', name: string, provider: ProviderItem): void
   (e: 'delete', name: string): void
   (e: 'test', name: string, provider: ProviderItem): void
   (e: 'users', name: string, provider: ProviderItem): void
 }>()
+
+const orderedProviders = computed(() => {
+  const names = [...new Set([...(props.order || []), ...Object.keys(props.providers)])]
+  return names.filter(name => Object.prototype.hasOwnProperty.call(props.providers, name))
+    .map(name => ({ name, provider: props.providers[name]! }))
+})
+
+function moveTo(source: string, target: string) {
+  if (props.busy || source === target || !Object.prototype.hasOwnProperty.call(props.providers, target)) return
+  emit('move', source, target)
+}
+
+function moveAdjacent(index: number, direction: -1 | 1) {
+  const source = orderedProviders.value[index]
+  const target = orderedProviders.value[index + direction]
+  if (source && target) moveTo(source.name, target.name)
+}
 
 // 脱敏精简显示：前 4 位 + 6 个星号 + 末 4 位，够短可放入一行
 function formatMasked(key: string): string {
@@ -153,7 +194,7 @@ function formatMasked(key: string): string {
 /* 表头 */
 .table-header {
   display: grid;
-  grid-template-columns: 100px 1.3fr 0.6fr 1fr 0.45fr 120px;
+  grid-template-columns: 96px 48px minmax(0, 1.3fr) minmax(0, 0.6fr) minmax(0, 1fr) minmax(0, 0.6fr) 192px;
   gap: 12px;
   padding: 12px 16px;
   background: #f9fafb;
@@ -185,7 +226,7 @@ function formatMasked(key: string): string {
 /* 表格行（内层：网格布局） */
 .table-row {
   display: grid;
-  grid-template-columns: 100px 1.3fr 0.6fr 1fr 0.45fr 120px;
+  grid-template-columns: 96px 48px minmax(0, 1.3fr) minmax(0, 0.6fr) minmax(0, 1fr) minmax(0, 0.6fr) 192px;
   gap: 12px;
   padding: 14px 16px;
   align-items: center;
@@ -309,6 +350,7 @@ function formatMasked(key: string): string {
 
 /* 模型名称 */
 .model-name {
+  overflow-wrap: anywhere;
   font-family: 'Monaco', 'Menlo', monospace;
   font-size: 12px;
   color: var(--text-sub, #666);
@@ -341,6 +383,7 @@ function formatMasked(key: string): string {
 
 /* 图标按钮 */
 .btn-icon {
+  flex-shrink: 0;
   width: 32px;
   height: 32px;
   border-radius: 6px;
@@ -373,15 +416,27 @@ function formatMasked(key: string): string {
 }
 
 /* 响应式 */
+.provider-table button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 @media (max-width: 768px) {
   .table-header,
   .table-row {
-    grid-template-columns: 70px 1fr 100px;
+    grid-template-columns: 136px 40px minmax(0, 1fr);
+    gap: 8px;
+    padding: 12px;
   }
 
+  .col-provider,
   .col-model,
   .col-apikey {
     display: none;
   }
+
+  .table-header .col-actions { display: none; }
+  .table-row .col-actions { grid-column: 1 / -1; flex-wrap:wrap; }
+  .btn-icon { width:44px; height:44px; }
 }
 </style>

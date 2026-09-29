@@ -8,6 +8,20 @@ tests
 node_modules
 frontend/node_modules
 *.zip
+.env
+.env.*
+!.env.example
+.superpowers
+frontend/dist
+frontend/test-results
+docs
+**/.pytest_cache
+**/__pycache__
+backend/staticfiles
+
+# 敏感配置（含真实 API Key），禁止打进镜像（*.example 模板不受影响）
+image_providers.yaml
+text_providers.yaml
 
 # 项目根目录下的运行时数据（backend/history 是代码，不受影响）
 /history
@@ -15,5 +29,4 @@ frontend/node_modules
 /user_configs
 /data
 
-# DeAI 是 Windows 本地增强工具，不进 Linux Docker 镜像（部署 zip 会包含）
-/deai-image
+# 图片后处理脚本随镜像部署，由独立 worker 执行。

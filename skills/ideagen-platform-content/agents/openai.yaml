@@ -1,0 +1,4 @@
+interface:
+  display_name: "IdeaGen Platform Content"
+  short_description: "Generate platform-aware Chinese content with prompt-only risk guidance"
+  default_prompt: "Use $ideagen-platform-content to create platform-adapted outline, copy, or image prompts from my topic and model settings."

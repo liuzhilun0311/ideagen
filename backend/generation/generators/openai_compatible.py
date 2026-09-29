@@ -51,6 +51,7 @@ class OpenAICompatibleGenerator(ImageGeneratorBase):
         size: str = "1024x1024",
         model: str = None,
         quality: str = "standard",
+        reference_images=None,
         **kwargs
     ) -> bytes:
         """
@@ -71,7 +72,17 @@ class OpenAICompatibleGenerator(ImageGeneratorBase):
 
         logger.info(f"OpenAI 兼容 API 生成图片: model={model}, size={size}, endpoint={self.endpoint_type}")
 
+        if model.startswith("gpt-image-"):
+            from .gpt_images import GptImagesClient
+            aspect_ratio = kwargs.get("aspect_ratio", "1:1")
+            return GptImagesClient(self.config).generate_image(
+                prompt, aspect_ratio=aspect_ratio, model=model,
+                reference_images=reference_images,
+            )
+
         # 根据端点路径决定使用哪种 API 方式
+        if reference_images:
+            raise ValueError("当前兼容图片模型不支持参考图，请选择支持参考图的图片模型。")
         if 'chat' in self.endpoint_type or 'completions' in self.endpoint_type:
             return self._generate_via_chat_api(prompt, size, model)
         else:

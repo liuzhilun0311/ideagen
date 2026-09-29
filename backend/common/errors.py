@@ -84,6 +84,19 @@ def classify_error(error: Union[Exception, str], context: Optional[Dict[str, Any
     host = _extract_host(raw) or diagnostics.get("base_url") or diagnostics.get("host")
     endpoint = diagnostics.get("endpoint") or _extract_endpoint(raw)
 
+    responses_detail = _first_meaningful_line(raw) if raw.startswith("Responses ") else None
+
+    if raw.startswith("Responses 代理连接失败"):
+        return AppError(
+            code="PROXY_UNAVAILABLE",
+            title="代理连接失败",
+            detail=responses_detail,
+            suggestion="请检查后端运行环境中的代理地址、认证及代理服务状态。",
+            status=400,
+            retryable=True,
+            diagnostics=diagnostics,
+        )
+
     if _looks_like_proxy_refused(text):
         return AppError(
             code="PROXY_UNAVAILABLE",
@@ -104,6 +117,17 @@ def classify_error(error: Union[Exception, str], context: Optional[Dict[str, Any
             suggestion="请确认代理客户端已开启，或关闭 Fake-IP DNS 后重试。",
             status=400,
             retryable=True,
+            diagnostics=diagnostics,
+        )
+
+    if "图片模型与接口不匹配" in raw:
+        return AppError(
+            code="MODEL_ENDPOINT_MISMATCH",
+            title="图片模型与接口不匹配",
+            detail=_first_meaningful_line(raw),
+            suggestion="请在图片模型设置中选择图片模型及 /v1/images/generations 接口。",
+            status=400,
+            retryable=False,
             diagnostics=diagnostics,
         )
 
@@ -234,7 +258,7 @@ def classify_error(error: Union[Exception, str], context: Optional[Dict[str, Any
         return AppError(
             code="NETWORK_TIMEOUT",
             title="网络请求超时",
-            detail=f"连接 {host} 超时。" if host else "请求等待时间过长。",
+            detail=responses_detail or (f"连接 {host} 超时。" if host else "请求等待时间过长。"),
             suggestion="请检查网络、代理和服务商状态后重试。",
             status=504,
             retryable=True,
@@ -245,7 +269,7 @@ def classify_error(error: Union[Exception, str], context: Optional[Dict[str, Any
         return AppError(
             code="NETWORK_ERROR",
             title="网络连接失败",
-            detail=f"无法连接到 {host}。" if host else "无法连接到上游服务。",
+            detail=responses_detail or (f"无法连接到 {host}。" if host else "无法连接到上游服务。"),
             suggestion="请检查网络连接、代理设置和 Base URL。",
             status=502,
             retryable=True,

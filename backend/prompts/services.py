@@ -20,6 +20,7 @@ from pathlib import Path
 from django.conf import settings
 
 from accounts.models import User
+from library.locking import serialized
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ BASE_NAME = '默认提示词'
 
 # 各类型提示词可用的占位符（用于编辑界面提示）
 KIND_PLACEHOLDERS = {
-    'outline': ['topic'],
+    'outline': ['topic', 'platform_name'],
     'content': ['topic', 'outline'],
     'image': ['page_content', 'page_type', 'full_outline', 'user_topic'],
 }
@@ -125,7 +126,7 @@ def get_base_prompt(kind: str) -> str:
         return ''
 
 
-def list_all_prompts(user_id) -> dict:
+def _list_all_prompts_unordered(user_id) -> dict:
     """返回全部类型提示词（默认在前）。
 
     - 普通用户：系统默认 + 自己创建的 + 别人共享给我的（系统默认不可编辑）
@@ -208,6 +209,14 @@ def list_all_prompts(user_id) -> dict:
     return result
 
 
+def list_all_prompts(user_id) -> dict:
+    from library.services import order_prompts
+    return {
+        kind: order_prompts(user_id, kind, items)
+        for kind, items in _list_all_prompts_unordered(user_id).items()
+    }
+
+
 def resolve_prompt_text(user_id, kind: str, name: str) -> str:
     """按名称解析提示词内容。
 
@@ -229,7 +238,8 @@ def resolve_prompt_text(user_id, kind: str, name: str) -> str:
     return get_base_prompt(kind)
 
 
-def save_prompt(user_id, kind: str, name: str, content: str) -> None:
+@serialized
+def save_prompt(user_id, kind: str, name: str, content: str, original_name=None) -> None:
     """新增或覆盖一个用户提示词（按名称 upsert）。"""
     if kind not in KINDS:
         raise ValueError(f"未知的提示词类型: {kind}")
@@ -247,6 +257,15 @@ def save_prompt(user_id, kind: str, name: str, content: str) -> None:
     if len(content) > _CONTENT_MAX_LEN:
         raise ValueError(f'提示词内容不能超过 {_CONTENT_MAX_LEN} 个字符')
 
+    if original_name is not None:
+        if not isinstance(original_name, str) or not original_name.strip():
+            raise ValueError('original_name 必须是非空名称')
+        original_name = original_name.strip()
+        if original_name == BASE_NAME:
+            raise ValueError('不能重命名系统默认提示词')
+        _rename_prompt(user_id, kind, original_name, name, content)
+        return
+
     prompts = _read_user_prompts(user_id, kind)
     for item in prompts:
         if item['name'] == name:
@@ -256,6 +275,63 @@ def save_prompt(user_id, kind: str, name: str, content: str) -> None:
             return
     prompts.append({'name': name, 'content': content, 'allowed_users': []})
     _write_user_prompts(user_id, kind, prompts)
+
+
+def _rename_prompt(user_id, kind, original_name, name, content):
+    """Called under the library lock, including SQL rollback compensation."""
+    from django.db import transaction
+    from library.models import LibraryOrder
+    from library.services import _atomic_write, _writer_gate, effective_order, prompt_id
+
+    path = _prompts_file(user_id, kind)
+    written = False
+    original = None
+    try:
+        with transaction.atomic():
+            _writer_gate()
+            original = path.read_bytes() if path.exists() else None
+            items = json.loads(original.decode('utf-8')) if original is not None else []
+            if not isinstance(items, list) or any(
+                not isinstance(item, dict) or 'name' not in item for item in items
+            ):
+                raise ValueError('提示词文件格式无效')
+            source = next((item for item in items if item['name'] == original_name), None)
+            if source is None:
+                raise ValueError('原提示词不存在，请刷新列表')
+            if name != original_name and any(item['name'] == name for item in items):
+                raise ValueError('该名称已存在，请使用其他名称')
+
+            old_id = prompt_id({'owner_id': str(user_id), 'name': original_name})
+            new_id = prompt_id({'owner_id': str(user_id), 'name': name})
+            rows = []
+            if old_id != new_id:
+                owner_order, _ = LibraryOrder.objects.get_or_create(
+                    user_id=user_id, resource='prompts', kind=kind,
+                )
+                visible = [prompt_id(item) for item in _list_all_prompts_unordered(user_id)[kind]]
+                owner_order.order = effective_order(owner_order.order, visible)
+                rows.append(owner_order)
+                # Shared viewers retain their own position, not the owner's order.
+                rows.extend(
+                    row for row in LibraryOrder.objects.filter(resource='prompts', kind=kind)
+                    .exclude(user_id=user_id)
+                    if old_id in row.order
+                )
+            source['name'] = name
+            source['content'] = content
+            _atomic_write(path, json.dumps(items, ensure_ascii=False, indent=2).encode('utf-8'))
+            written = True
+            for row in rows:
+                row.order = list(dict.fromkeys(
+                    new_id if item == old_id else item
+                    for item in row.order if item != new_id
+                ))
+                row.revision += 1
+                row.save(update_fields=['order', 'revision'])
+    except Exception:
+        if written:
+            _atomic_write(path, original)
+        raise
 
 
 def save_base_prompt(kind: str, content: str) -> None:
@@ -279,6 +355,7 @@ def save_base_prompt(kind: str, content: str) -> None:
         f.write(content)
 
 
+@serialized
 def delete_prompt(user_id, kind: str, name: str) -> bool:
     """删除一个用户提示词，返回是否删除成功。"""
     prompts = _read_user_prompts(user_id, kind)
@@ -291,6 +368,7 @@ def delete_prompt(user_id, kind: str, name: str) -> bool:
 
 # ==================== 管理员：共享名单配置 ====================
 
+@serialized
 def set_prompt_allowed_users(owner_id, kind: str, name: str, usernames: list) -> None:
     """设置某提示词对哪些用户可见。
 
@@ -326,6 +404,7 @@ def set_prompt_allowed_users(owner_id, kind: str, name: str, usernames: list) ->
     raise ValueError(f"提示词不存在：{name}")
 
 
+@serialized
 def admin_delete_prompt(owner_id, kind: str, name: str) -> bool:
     """管理员删除任意用户的提示词，返回是否删除成功。"""
     prompts = _read_user_prompts(owner_id, kind)

@@ -107,6 +107,7 @@ import { ref, nextTick, watch, onMounted, onActivated, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useGeneratorStore } from '../stores/generator'
 import { updateHistory, createHistory, generateOutline, getPrompts, cancelCurrentGeneration, getConfig, type PromptItem } from '../api'
+import { outlineRequest } from '../features/outlineRequest'
 
 // 注释掉外部promptBuilder导入，全部内联实现
 // import { buildPrompt } from '@/utils/promptBuilder'
@@ -132,7 +133,8 @@ const getPageTypeName = (type: string) => {
   const names: Record<string, string> = {
     cover: '封面',
     content: '内容',
-    summary: '总结'
+    summary: '总结',
+    infographic: '信息图'
   }
   return names[type] || '内容'
 }
@@ -186,9 +188,17 @@ const regenerateOutline = async () => {
 
   isRegenerating.value = true
   try {
-    const result = await generateOutline(store.topic.trim(), undefined, outlineAbort.signal, store.outlinePromptName, store.referenceContent, store.outlineModelName)
+    const input = outlineRequest(store)
+    const result = await generateOutline(
+      input.topic, input.images, outlineAbort.signal, store.outlinePromptName,
+      input.reference_content, input.provider, input.preferences.organization,
+      input.preferences, input.reference_roles,
+    )
     if (result.success && result.pages) {
       store.setOutline(result.outline || '', result.pages)
+      store.outline.requested_preferences = { ...input.preferences }
+      store.outline.generation_preferences = result.generation_preferences || { ...input.preferences }
+      store.outline.growth_recommendation = result.growth_recommendation
       if (store.recordId) {
         updateHistory(store.recordId, {
           outline: { raw: result.outline || '', pages: result.pages },
@@ -476,6 +486,10 @@ watch(()=>store.outline.pages, ()=>{
 .page-type.summary {
   color:#52C41A;
   background:#F6FFED;
+}
+.page-type.infographic {
+  color:#7C3AED;
+  background:#EDE9FE;
 }
 .card-controls {
   display:flex;

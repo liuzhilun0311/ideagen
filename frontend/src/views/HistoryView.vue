@@ -8,6 +8,7 @@
       </div>
       <div style="display: flex; gap: 10px;">
         <button
+          v-if="!currentSource"
           class="btn btn-secondary btn-small"
           @click="handleScanAll"
           :disabled="isScanning || session.busy"
@@ -16,7 +17,7 @@
           <div v-else class="spinner-small" style="margin-right: 6px;"></div>
           {{ isScanning ? '同步中...' : '同步历史' }}
         </button>
-        <button class="btn btn-primary btn-small" @click="router.push('/')">
+        <button class="btn btn-primary btn-small" :disabled="session.busy" @click="newCreation">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
           新建图文
         </button>
@@ -38,6 +39,10 @@
 
     <!-- Stats Overview -->
     <StatsOverview v-if="stats" :stats="stats" />
+    <div class="source-selector" role="group" aria-label="作品来源">
+      <button :aria-pressed="!currentSource" @click="switchSource(undefined)">作品</button>
+      <button :aria-pressed="currentSource === 'shared'" @click="switchSource('shared')">共享给我</button>
+    </div>
 
     <!-- Toolbar: Tabs & Search -->
     <div class="toolbar-wrapper">
@@ -86,7 +91,7 @@
         <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
       </div>
       <h3>暂无相关记录</h3>
-      <p class="empty-tips">去创建一个新的作品吧</p>
+      <p class="empty-tips">{{ currentSource === 'shared' ? '暂无共享给你的相关作品' : '去创建一个新的作品吧' }}</p>
     </div>
 
     <div v-else class="gallery-grid">
@@ -94,10 +99,12 @@
         v-for="record in records"
         :key="record.id"
         :record="record"
+        :readonly="currentSource === 'shared'"
         @preview="viewImages"
         @edit="loadRecord"
         @download="handleDownload"
         @delete="confirmDelete"
+        @share="openSharing"
       />
     </div>
 
@@ -125,9 +132,11 @@
       v-if="viewingRecord"
       :visible="!!viewingRecord"
       :record="viewingRecord"
+      :readonly="currentSource === 'shared' || viewingRecord.can_edit !== true"
       @close="closeGallery"
       @edit="loadRecord"
       @download="downloadImage"
+      @unavailable="previewUnavailable"
     />
 
     <!-- 大纲查看模态框 -->
@@ -138,54 +147,36 @@
       @close="showOutlineModal = false"
     />
 
-    <!-- 下载进行中提示 -->
-    <Teleport to="body">
-      <div v-if="downloadWorking" class="dl-mask">
-        <div class="dl-dialog">
-          <div class="dl-spinner"></div>
-          <p class="dl-stage">{{ downloadStage }}</p>
-        </div>
-      </div>
-    </Teleport>
+    <WorkSharingDialog v-if="sharingRecord" :key="sharingRecord.id" :record="sharingRecord"
+      @close="sharingRecord = null" @saved="sharingSaved" />
 
-    <!-- 下载完成提示 -->
-    <Teleport to="body">
-      <div v-if="downloadComplete" class="dl-mask" @click.self="downloadComplete = false">
-        <div class="dl-dialog">
-          <div class="dl-icon">
-            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-              <polyline points="22 4 12 14.01 9 11.01"/>
-            </svg>
-          </div>
-          <h3 class="dl-title">下载完成</h3>
-          <p class="dl-desc">{{ downloadMessage }}</p>
-          <div class="dl-actions">
-            <button class="dl-btn" @click="downloadComplete = false">知道了</button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <ImageDownloadDialog v-if="downloadVisible" :visible="downloadVisible" :pages="downloadPages"
+      :can-process="currentSource !== 'shared' && downloadRecord?.can_edit === true"
+      :loading="downloadLoading || downloadProcessing.loading.value"
+      :load-error="downloadError || downloadProcessing.error.value?.detail"
+      :content="downloadIndex === null ? downloadContent : undefined"
+      @close="closeDownload" @process="editDownloadRecord" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, onActivated, onDeactivated, onBeforeUnmount } from 'vue'
+import { computed, ref, watch, onMounted, onActivated, onDeactivated, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import {
   getHistoryList,
   getHistoryStats,
-  searchHistory,
   deleteHistory,
   getHistory,
-  getImageUrl,
   type HistoryRecord,
+  type HistoryDetail,
+  type HistorySource,
   scanAllTasks
 } from '../api'
 import { useGeneratorStore } from '../stores/generator'
 import { useStudioSession } from '../stores/studioSession'
 import { useHistoryDraft } from '../composables/useHistoryDraft'
-import { runDeaiDownload, downloadAsZip } from '../composables/useDeaiDownload'
+import ImageDownloadDialog from '../components/common/ImageDownloadDialog.vue'
+import { usePostprocessing } from '../composables/usePostprocessing'
 
 // 引入组件
 import StatsOverview from '../components/history/StatsOverview.vue'
@@ -194,12 +185,32 @@ import ImageGalleryModal from '../components/history/ImageGalleryModal.vue'
 import OutlineModal from '../components/history/OutlineModal.vue'
 import ErrorCard from '../components/common/ErrorCard.vue'
 import { normalizeApiError } from '../utils/errors'
+import WorkSharingDialog from '../components/history/WorkSharingDialog.vue'
+import { useAuthStore } from '../stores/auth'
+import { getMe } from '../api/auth'
+import { setUser } from '../api/token'
+import { selectedTitle } from '../utils/publicationContent'
 
 const router = useRouter()
 const route = useRoute()
 const store = useGeneratorStore()
 const session = useStudioSession()
 const historyDraft = useHistoryDraft(router)
+async function newCreation() {
+  if (session.busy) return
+  const hasDraft = store.topic || store.referenceContent || store.outline.raw
+    || store.outline.pages.length || store.images.length || store.userImages.length
+    || store.recordId || store.taskId || store.content.titles.length
+    || store.content.copywriting || store.content.tags.length
+  if (hasDraft && !window.confirm('新建图文将清空当前创作草稿，已保存的作品不受影响。确定继续吗？')) return
+  if (!session.replaceDraft()) return
+  historyDraft.cancelPending()
+  store.reset()
+  store.setEntrySource('home')
+  store.saveToStorage()
+  await router.push('/')
+}
+const auth = useAuthStore()
 onDeactivated(historyDraft.cancelPending)
 onBeforeUnmount(historyDraft.cancelPending)
 
@@ -208,6 +219,7 @@ const records = ref<HistoryRecord[]>([])
 const loading = ref(false)
 const stats = ref<any>(null)
 const currentTab = ref('all')
+const currentSource = ref<HistorySource>()
 const searchKeyword = ref('')
 const currentPage = ref(1)
 const totalPages = ref(1)
@@ -216,37 +228,116 @@ const pageInput = ref(1)
 watch(currentPage, (v) => { pageInput.value = v })
 
 // 查看器状态
-const viewingRecord = ref<any>(null)
+const viewingRecord = ref<HistoryDetail | null>(null)
+const sharingRecord = ref<HistoryRecord | null>(null)
 const showOutlineModal = ref(false)
 const isScanning = ref(false)
 const error = historyDraft.error
 const successMessage = ref('')
+let active = true
+let lifecycle = 0
+let listEpoch = 0
+let statsEpoch = 0
+let previewEpoch = 0
+let refreshingAuth = false
+function scope() {
+  const revision = lifecycle
+  const token = auth.token
+  const userId = auth.user?.id
+  const sessionRevision = auth.sessionRevision
+  return () => active && lifecycle === revision && auth.token === token
+    && auth.user?.id === userId && auth.sessionRevision === sessionRevision
+}
+function clearTransient() {
+  ++lifecycle
+  ++listEpoch
+  ++statsEpoch
+  closeGallery()
+  closeDownload()
+  sharingRecord.value = null
+  records.value = []
+  stats.value = null
+  loading.value = false
+  refreshingAuth = false
+  isScanning.value = false
+  error.value = null
+  successMessage.value = ''
+  historyDraft.cancelPending()
+}
+function openSharing(record: { id: string }) {
+  const item = records.value.find(item => item.id === record.id)
+  if (!currentSource.value && auth.isAdmin && item?.can_share && item.owner?.id === auth.user?.id) sharingRecord.value = item
+}
+function sharingSaved(id: string, userIds: string[]) {
+  if (sharingRecord.value?.id !== id) return
+  const item = records.value.find(item => item.id === id)
+  if (item) item.shared_count = userIds.length
+  sharingRecord.value = null
+}
+function previewUnavailable() {
+  closeGallery()
+  records.value = []
+  stats.value = null
+  error.value = normalizeApiError('作品已不可用，可能已被删除或取消共享。请刷新作品列表。', '作品不可用')
+}
 
 // 下载状态
-const downloadWorking = ref(false)
-const downloadStage = ref('')
-const downloadMessage = ref('')
-const downloadComplete = ref(false)
+const downloadVisible = ref(false)
+const downloadLoading = ref(false)
+const downloadError = ref('')
+const downloadRecord = ref<HistoryDetail | null>(null)
+const downloadIndex = ref<number | null>(null)
+const downloadProcessing = usePostprocessing(computed(() => downloadVisible.value ? downloadRecord.value?.id || null : null))
+let downloadEpoch = 0
+const downloadPages = computed(() => downloadProcessing.pages.value
+  .filter(page => downloadIndex.value === null || page.index === downloadIndex.value))
+const downloadContent = computed(() => {
+  const content = downloadRecord.value?.content
+  if (!content) return undefined
+  const titles = content.titles || []
+  return { ...content, titles: titles.length ? [selectedTitle(titles, content.selected_title_index)] : [] }
+})
+function closeDownload() {
+  downloadVisible.value = false
+  downloadLoading.value = false
+  downloadRecord.value = null
+  downloadError.value = ''
+  ++downloadEpoch
+}
+async function editDownloadRecord() {
+  if (currentSource.value === 'shared' || !downloadRecord.value?.can_edit) return
+  const id = downloadRecord.value?.id
+  closeDownload()
+  if (id) await loadRecord(id)
+}
+onDeactivated(closeDownload)
 
 /**
  * 加载历史记录列表
  */
 async function loadData() {
+  if (!active) return
+  const valid = scope()
+  const request = ++listEpoch
   loading.value = true
   error.value = null
   try {
     let statusFilter = currentTab.value === 'all' ? undefined : currentTab.value
-    const res = await getHistoryList(currentPage.value, 12, statusFilter)
+    const res = await getHistoryList(currentPage.value, 12, statusFilter, currentSource.value, searchKeyword.value.trim() || undefined)
+    if (!valid() || request !== listEpoch) return
     if (res.success) {
       records.value = res.records
       totalPages.value = res.total_pages
     } else {
+      records.value = []
       error.value = normalizeApiError(res.error || res.error_message || '获取历史记录列表失败', '获取历史记录列表失败')
     }
   } catch(e) {
+    if (!valid() || request !== listEpoch) return
+    records.value = []
     error.value = normalizeApiError(e, '获取历史记录列表失败')
   } finally {
-    loading.value = false
+    if (valid() && request === listEpoch) loading.value = false
   }
 }
 
@@ -254,14 +345,21 @@ async function loadData() {
  * 加载统计数据
  */
 async function loadStats() {
+  if (!active) return
+  const valid = scope()
+  const request = ++statsEpoch
   try {
-    const res = await getHistoryStats()
+    const res = await getHistoryStats(currentSource.value)
+    if (!valid() || request !== statsEpoch) return
     if (res.success) {
       stats.value = res
     } else {
+      stats.value = null
       error.value = normalizeApiError(res.error || res.error_message || '获取统计信息失败', '获取统计信息失败')
     }
   } catch(e) {
+    if (!valid() || request !== statsEpoch) return
+    stats.value = null
     error.value = normalizeApiError(e, '获取统计信息失败')
   }
 }
@@ -270,6 +368,9 @@ async function loadStats() {
  * 切换标签页
  */
 function switchTab(tab: string) {
+  closeGallery()
+  closeDownload()
+  sharingRecord.value = null
   currentTab.value = tab
   currentPage.value = 1
   loadData()
@@ -278,32 +379,28 @@ function switchTab(tab: string) {
 /**
  * 搜索历史记录
  */
-async function handleSearch() {
-  if (!searchKeyword.value.trim()) {
-    loadData()
-    return
-  }
-  loading.value = true
-  error.value = null
-  try {
-    const res = await searchHistory(searchKeyword.value)
-    if (res.success) {
-      records.value = res.records
-      totalPages.value = 1
-    } else {
-      error.value = normalizeApiError(res.error || res.error_message || '搜索历史记录失败', '搜索历史记录失败')
-    }
-  } catch(e) {
-    error.value = normalizeApiError(e, '搜索历史记录失败')
-  } finally {
-    loading.value = false
-  }
+function handleSearch() {
+  currentPage.value = 1
+  closeGallery()
+  closeDownload()
+  sharingRecord.value = null
+  void loadData()
+}
+function switchSource(source?: HistorySource) {
+  if (currentSource.value === source) return
+  clearTransient()
+  currentSource.value = source
+  currentPage.value = 1
+  void loadData()
+  void loadStats()
 }
 
 /**
  * 加载记录并跳转到编辑页
  */
 async function loadRecord(id: string) {
+  const record = records.value.find(item => item.id === id) || viewingRecord.value || downloadRecord.value
+  if (currentSource.value === 'shared' || record?.id !== id || record.can_edit !== true) return
   if (await historyDraft.loadRecord(id)) closeGallery()
 }
 
@@ -311,14 +408,19 @@ async function loadRecord(id: string) {
  * 查看图片
  */
 async function viewImages(id: string) {
+  const valid = scope()
+  const request = ++previewEpoch
+  viewingRecord.value = null
   try {
     const res = await getHistory(id)
-    if (res.success && res.record) {
+    if (!valid() || request !== previewEpoch) return
+    if (res.success && res.record?.id === id) {
       viewingRecord.value = res.record
     } else {
-      error.value = normalizeApiError(res.error || res.error_message || '查看图片失败', '查看图片失败')
+      previewUnavailable()
     }
   } catch (cause) {
+    if (!valid() || request !== previewEpoch) return
     error.value = normalizeApiError(cause, '查看图片失败')
   }
 }
@@ -327,6 +429,7 @@ async function viewImages(id: string) {
  * 关闭图片查看器
  */
 function closeGallery() {
+  ++previewEpoch
   viewingRecord.value = null
   showOutlineModal.value = false
 }
@@ -335,6 +438,8 @@ function closeGallery() {
  * 确认删除
  */
 async function confirmDelete(record: any) {
+  if (currentSource.value === 'shared' || record.can_edit !== true) return
+  const valid = scope()
   if (record.id === store.recordId) {
     error.value = normalizeApiError('此作品正在创作区编辑，请先切换到另一份草稿再删除。', '无法删除当前作品')
     return
@@ -346,6 +451,7 @@ async function confirmDelete(record: any) {
     }
     try {
       const result = await deleteHistory(record.id)
+      if (!valid()) return
       if (result.success) {
         loadData()
         loadStats()
@@ -353,6 +459,7 @@ async function confirmDelete(record: any) {
         error.value = normalizeApiError(result.error || result.error_message || '删除历史记录失败', '删除历史记录失败')
       }
     } catch (cause) {
+      if (!valid()) return
       error.value = normalizeApiError(cause, '删除历史记录失败')
     }
   }
@@ -362,6 +469,9 @@ async function confirmDelete(record: any) {
  * 切换页码
  */
 function changePage(p: number) {
+  closeGallery()
+  closeDownload()
+  sharingRecord.value = null
   currentPage.value = p
   loadData()
 }
@@ -370,7 +480,7 @@ function changePage(p: number) {
  * 前往输入的页码（回车/失焦触发），越界自动收敛到 1~总页数
  */
 function goToPage() {
-  const p = Math.min(Math.max(1, pageInput.value || 1), totalPages.value)
+  const p = Math.min(Math.max(1, pageInput.value || 1), Math.max(1, totalPages.value))
   changePage(p)
   pageInput.value = p
 }
@@ -378,96 +488,46 @@ function goToPage() {
 /**
  * 下载单张图片
  */
-function downloadImage(filename: string, index: number) {
+function downloadImage(_filename: string, index: number) {
   if (!viewingRecord.value) return
-  const link = document.createElement('a')
-  link.href = getImageUrl(viewingRecord.value.images.task_id, filename, false)
-  link.download = `page_${index + 1}.png`
-  link.click()
+  void handleDownload(viewingRecord.value.id, index)
 }
 
 /**
- * 一键下载全部（与创作完成页功能一致）：去AI化 + 选择文件夹直接写入
+ * 下载已有图片版本，不在导出时触发图片处理。
  */
-async function handleDownload(id: string) {
-  if (downloadWorking.value) return
-
-  // 浏览器支持则立即弹出文件夹选择器（要求紧跟用户点击手势）；不支持（如 http 非 localhost）则走 zip 兜底
-  let dirHandle: any = null
-  if ('showDirectoryPicker' in window) {
-    try {
-      dirHandle = await (window as any).showDirectoryPicker({ mode: 'readwrite', startIn: 'downloads' })
-    } catch (pickErr: any) {
-      // 用户取消选择 → 静默结束
-      return
-    }
-  }
-
-  downloadWorking.value = true
+async function handleDownload(id: string, index: number | null = null) {
+  const valid = scope()
+  const epoch = ++downloadEpoch
+  downloadRecord.value = null
+  downloadIndex.value = index
+  downloadError.value = ''
+  downloadVisible.value = true
+  downloadLoading.value = true
   try {
     const res = await getHistory(id)
+    if (!valid() || epoch !== downloadEpoch) return
     if (!res.success || !res.record) {
-      alert(res.error_message || '获取历史记录详情失败')
-      return
+      closeGallery()
+      records.value = records.value.filter(record => record.id !== id)
+      throw new Error(res.error_message || '作品已不可用，可能已被删除或取消共享')
     }
-    const r = res.record
-    const taskId = r.images?.task_id || ''
-    if (!taskId) {
-      alert('该记录没有关联的图片任务，无法下载')
-      return
-    }
-    const generated = r.images?.generated || []
-    const images = (r.outline?.pages || [])
-      .map((page: any, idx: number) => {
-        const filename = generated[page.index] || generated[idx] || ''
-        return { index: page.index ?? idx, url: filename ? getImageUrl(taskId, filename, false) : '' }
-      })
-      .filter((i: any) => i.url)
-    if (images.length === 0) {
-      alert('该记录没有可下载的图片')
-      return
-    }
-
-    const result = dirHandle
-      ? await runDeaiDownload({
-          dirHandle,
-          taskId,
-          images,
-          content: {
-            titles: r.content?.titles || [],
-            copywriting: r.content?.copywriting || '',
-            tags: r.content?.tags || []
-          },
-          setStage: (t) => { downloadStage.value = t }
-        })
-      : await downloadAsZip({
-          taskId,
-          images,
-          content: {
-            titles: r.content?.titles || [],
-            copywriting: r.content?.copywriting || '',
-            tags: r.content?.tags || []
-          },
-          setStage: (t) => { downloadStage.value = t }
-        })
-    downloadMessage.value = result.message
-    downloadComplete.value = true
-  } catch (e: any) {
-    console.error('下载失败:', e)
-    alert('下载失败，请稍后重试')
-  } finally {
-    downloadWorking.value = false
-  }
+    downloadRecord.value = res.record
+  } catch (cause) {
+    if (valid() && epoch === downloadEpoch) downloadError.value = normalizeApiError(cause, '读取作品失败').detail
+  } finally { if (valid() && epoch === downloadEpoch) downloadLoading.value = false }
 }
 
 /**
  * 扫描所有任务并同步
  */
 async function handleScanAll() {
-  if (session.busy || isScanning.value) return
+  if (currentSource.value || session.busy || isScanning.value) return
+  const valid = scope()
   isScanning.value = true
   try {
     const result = await scanAllTasks()
+    if (!valid()) return
     if (result.success) {
       let message = `扫描完成！\n`
       message += `- 总任务数: ${result.total_tasks || 0}\n`
@@ -485,43 +545,71 @@ async function handleScanAll() {
       error.value = normalizeApiError(result.error || result.error_message || '扫描失败', '扫描失败')
     }
   } catch (e) {
+    if (!valid()) return
     console.error('扫描失败:', e)
     error.value = normalizeApiError(e, '扫描失败')
   } finally {
-    isScanning.value = false
+    if (valid()) isScanning.value = false
   }
 }
 
-onMounted(async () => {
-  await loadData()
-  await loadStats()
-
-  // 检查路由参数，如果有 ID 则自动打开图片查看器
-  if (route.params.id) {
-    await viewImages(route.params.id as string)
-  }
-
-  // 自动执行一次扫描（静默，不显示结果）
-  if (session.busy || isScanning.value) return
+async function refreshAuthorized() {
+  const valid = scope()
+  refreshingAuth = true
+  loading.value = true
   try {
-    const result = await scanAllTasks()
-    if (result.success && (result.synced || 0) > 0) {
-      await loadData()
-      await loadStats()
+    const result = await getMe()
+    if (!valid()) return
+    if (!result.success || !result.user) throw new Error('登录状态已失效，请重新登录')
+    auth.user = result.user
+    setUser(result.user)
+    await Promise.all([loadData(), loadStats()])
+    if (valid() && route.params.id) await viewImages(route.params.id as string)
+  } catch (cause) {
+    if (valid()) {
+      records.value = []
+      stats.value = null
+      error.value = normalizeApiError(cause, '刷新访问权限失败')
     }
-  } catch (e) {
-    console.error('自动扫描失败:', e)
+  } finally {
+    if (valid()) { refreshingAuth = false; loading.value = false }
   }
-})
+}
+watch([() => auth.token, () => auth.user?.id, () => auth.sessionRevision], () => {
+  clearTransient()
+  currentPage.value = 1
+  currentTab.value = 'all'
+  currentSource.value = undefined
+  searchKeyword.value = ''
+  if (active && auth.token) void refreshAuthorized()
+}, { flush: 'sync' })
+watch(() => auth.user?.is_admin, () => {
+  if (refreshingAuth) return
+  clearTransient()
+  if (active && auth.token) void refreshAuthorized()
+}, { flush: 'sync' })
+watch(() => route.fullPath, () => { clearTransient() }, { flush: 'sync' })
+onMounted(() => { void refreshAuthorized() })
 
 // 从其他模块切换回来时刷新数据（KeepAlive 缓存下 onMounted 只执行一次）
-onActivated(async () => {
-  await loadData()
-  await loadStats()
+onActivated(() => {
+  if (active) return
+  active = true
+  clearTransient()
+  void refreshAuthorized()
 })
+onDeactivated(() => { active = false; clearTransient() })
+onBeforeUnmount(() => { active = false; clearTransient() })
 </script>
 
 <style scoped>
+.source-selector { display: flex; gap: 8px; margin: 20px 0; }
+.source-selector button { border: 1px solid var(--border-color); background: white; padding: 8px 16px; border-radius: 6px; cursor: pointer; }
+.source-selector button[aria-pressed="true"] { color: var(--primary); border-color: var(--primary); }
+@media (max-width: 600px) {
+  .toolbar-wrapper { flex-wrap: wrap; gap: 12px; }
+  .search-mini { width: 100%; }
+}
 /* Small Spinner */
 .spinner-small {
   width: 16px;

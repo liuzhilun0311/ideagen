@@ -19,10 +19,17 @@ def _spa_serve(request):
         if rel:
             target = (dist / rel).resolve()
             if target.is_relative_to(dist.resolve()) and target.is_file():
-                return FileResponse(open(target, 'rb'))
+                # Windows MIME databases do not consistently recognize WebP.
+                content_type = 'image/webp' if target.suffix.lower() == '.webp' else None
+                response = FileResponse(open(target, 'rb'), content_type=content_type)
+                if target.suffix.lower() == '.html':
+                    response['Cache-Control'] = 'no-cache'
+                return response
         index = dist / 'index.html'
         if index.exists():
-            return FileResponse(open(index, 'rb'))
+            response = FileResponse(open(index, 'rb'))
+            response['Cache-Control'] = 'no-cache'
+            return response
     return JsonResponse({
         "message": "IdeaGen 图文生成器 API",
         "version": "0.1.0",
@@ -42,6 +49,9 @@ urlpatterns = [
     path('api/', include('generation.urls')),
     path('api/', include('providers.urls')),
     path('api/', include('prompts.urls')),
+    path('api/', include('library.urls')),
+    path('api/', include('postprocessing.urls')),
+    path('api/', include('reference_assets.urls')),
     path('django-admin/', admin.site.urls),
 ]
 

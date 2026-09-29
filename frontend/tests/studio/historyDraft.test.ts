@@ -48,7 +48,32 @@ beforeEach(() => {
 })
 
 describe('guarded history draft replacement', () => {
-  it.each(['homeBusy', 'workspaceBusy'] as const)('refuses replacement before GET while %s', async key => {
+  it('restores the selected title without discarding alternatives', async () => {
+    const saved = record()
+    saved.content = { titles: ['First', 'Second'], selected_title_index: 1, copywriting: 'Copy', tags: [] }
+    vi.mocked(getHistory).mockResolvedValue({ success: true, record: saved })
+    expect(await history.loadRecord('history')).toBe(true)
+    expect(store.content.selectedTitleIndex).toBe(1)
+    expect(store.content.titles).toEqual(['First', 'Second'])
+  })
+  it('refuses to load a read-only shared work into the creation draft', async () => {
+    store.topic = 'Keep my draft'
+    const before = JSON.stringify(store.$state)
+    vi.mocked(getHistory).mockResolvedValue({ success: true, record: { ...record(), can_edit: false } })
+    expect(await history.loadRecord('history')).toBe(false)
+    expect(JSON.stringify(store.$state)).toBe(before)
+    expect(push).not.toHaveBeenCalled()
+    expect(history.error.value?.detail).toContain('共享')
+  })
+  it('resumes the current record on the remembered copy page without reading history', async () => {
+    store.setRecordId('current')
+    store.setOutline('Local', [{ index: 0, type: 'cover', content: 'Local' }])
+    session.workspacePath = '/workspace/copy'
+    expect(await history.loadRecord('current')).toBe(true)
+    expect(push).toHaveBeenCalledWith('/workspace/copy')
+    expect(getHistory).not.toHaveBeenCalled()
+  })
+  it.each(['homeBusy', 'workspaceBusy', 'structureBusy'] as const)('refuses replacement before GET while %s', async key => {
     session[key] = true
     const before = JSON.stringify(store.$state)
     expect(await history.loadRecord('history')).toBe(false)
@@ -145,6 +170,7 @@ describe('guarded history draft replacement', () => {
     store.taskId = 'old-task'
     store.images = [{ index: 0, url: 'old.png', status: 'done' }]
     const payload = record()
+    payload.image_style = { preset: 'comic', notes: 'Blue' }
     delete payload.content
     payload.images = { task_id: null, generated: [] }
     vi.mocked(getHistory).mockResolvedValue({ success: true, record: payload })
@@ -171,14 +197,20 @@ describe('guarded history draft replacement', () => {
 
   it('clones pages, titles and tags without retaining response aliases', async () => {
     const payload = record()
+    payload.image_style = { preset: 'comic', notes: 'Blue' }
+    payload.content!.source = { topic: 'Original topic', outline: 'Original outline' }
     vi.mocked(getHistory).mockResolvedValue({ success: true, record: payload })
     await history.loadRecord('history')
+    expect(store.imageStyle).toEqual({ preset: 'comic', notes: 'Blue' })
     store.outline.pages[0].content = 'Local edit'
     store.content.titles.push('Local title')
     store.content.tags.push('Local tag')
     expect(payload.outline.pages[0].content).toBe('Cover')
     expect(payload.content?.titles).toEqual(['Title'])
     expect(payload.content?.tags).toEqual(['tag'])
+    expect(store.content.source).toEqual(payload.content!.source)
+    store.content.source!.outline = 'Local source'
+    expect(payload.content!.source.outline).toBe('Original outline')
     payload.outline.pages.push({ index: 1, type: 'content', content: 'Remote' })
     expect(store.outline.pages).toHaveLength(1)
   })

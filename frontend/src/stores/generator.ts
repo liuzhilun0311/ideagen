@@ -14,8 +14,22 @@
  * 4. result: 查看生成结果
  */
 import { defineStore } from 'pinia'
-import type { Page } from '../api'
+import { useStudioSession } from './studioSession'
+import { selectedTitleIndex } from '../utils/publicationContent'
+import type { ImageAnalysisSnapshot, Page } from '../api'
 import { withToken } from '../api/image'
+import type { ContentSource } from '../utils/contentSource'
+import { normalizeImageStyle, type ImageStyle } from '../features/styles/catalog'
+import {
+  normalizeGrowthGoal,
+  normalizePublishingPlatform,
+  readLayout,
+  type GrowthGoal,
+  type GrowthRecommendation,
+  type InformationDensity,
+  type OutlineContentForm,
+  type PublishingPlatform,
+} from '../features/generationOptions'
 
 
 /**
@@ -34,7 +48,10 @@ export interface GeneratedImage {
  * 生成的内容数据（标题、文案、标签）
  */
 export interface GeneratedContent {
+  diagnostic_record_id?: string
+  source?: ContentSource
   titles: string[]     // 标题列表（多个备选）
+  selectedTitleIndex: number
   copywriting: string  // 文案内容
   tags: string[]       // 标签列表
   status: 'idle' | 'generating' | 'done' | 'error'  // 生成状态
@@ -43,6 +60,21 @@ export interface GeneratedContent {
 
 
 export interface GeneratorState {
+  outlineAudience: string
+  outlineAudienceDetail: string
+  outlineTone: string
+  outlineOrganization: string
+  outlinePageCount: import('../features/generationOptions').OutlinePageCount
+  outlineContentForm: OutlineContentForm
+  outlineInformationDensity: InformationDensity
+  outlinePlatform: PublishingPlatform
+  outlineGoal: GrowthGoal
+  imageStyle: ImageStyle
+  useCoverAsReference: boolean
+  imageResolution: 'AUTO' | '1K' | '2K' | '4K'
+  imageAspectRatio: string
+  imageQuality: 'auto' | 'low' | 'medium' | 'high' | 'ultra' | 'highest'
+  imageOutputFormat: 'png' | 'jpeg' | 'webp'
   // 当前阶段：input-输入主题, outline-编辑大纲, generating-生成中, result-查看结果
   stage: 'input' | 'outline' | 'generating' | 'result'
 
@@ -53,10 +85,19 @@ export interface GeneratorState {
 
   // 用户输入的参考内容（选填，生成大纲时结合使用）
   referenceContent: string
+  referenceRoles: string[]
 
 
   // 大纲数据（包含原始文本和解析后的页面列表）
   outline: {
+    requested_preferences?: import('../features/generationOptions').OutlinePreferences
+    copy_preferences?: import('../features/copyOptions').CopyPreferences
+    generation_preferences?: import('../features/generationOptions').OutlinePreferences
+    generation_record_id?: string
+    diagnostic_record_id?: string
+    generation_audit?: import('../api/types').GenerationAudit
+    growth_recommendation?: GrowthRecommendation
+    organization?: string
     raw: string      // 原始大纲文本
     pages: Page[]    // 解析后的页面数组
   }
@@ -80,10 +121,12 @@ export interface GeneratorState {
 
   // 历史记录ID（用于保存和加载历史记录）
   recordId: string | null
+  analysisSnapshots: ImageAnalysisSnapshot[]
 
 
   // 用户上传的参考图片（File对象，不会被持久化）
   userImages: File[]
+  referenceImageKey: string
 
 
   // 生成的内容数据（标题、文案、标签）
@@ -136,14 +179,28 @@ function saveState(state: GeneratorState) {
   try {
     // 只保存关键数据，不保存 userImages（文件对象无法序列化）
     const toSave = {
+      outlineAudience: state.outlineAudience, outlineAudienceDetail: state.outlineAudienceDetail, outlineTone: state.outlineTone,
+      outlineOrganization: state.outlineOrganization,
+      outlinePageCount: state.outlinePageCount,
+      outlineContentForm: state.outlineContentForm,
+      outlineInformationDensity: state.outlineInformationDensity,
+      outlinePlatform: state.outlinePlatform,
+      outlineGoal: state.outlineGoal,
+      imageStyle: state.imageStyle,
+      useCoverAsReference: state.useCoverAsReference,
+      imageResolution: state.imageResolution, imageAspectRatio: state.imageAspectRatio,
+      imageQuality: state.imageQuality, imageOutputFormat: state.imageOutputFormat,
       stage: state.stage,                      // 当前阶段
       topic: state.topic,                      // 用户输入的主题
       referenceContent: state.referenceContent,  // 用户输入的参考内容（选填）
+      referenceRoles: [...state.referenceRoles],
+      referenceImageKey: state.referenceImageKey,
       outline: state.outline,                  // 大纲数据
       progress: state.progress,                // 生成进度
       images: state.images,                    // 生成的图片结果
       taskId: state.taskId,                    // 任务ID
       recordId: state.recordId,                // 历史记录ID
+      analysisSnapshots: state.analysisSnapshots,
       content: state.content,                  // 生成的内容（标题、文案、标签）
       outlineStatus: state.outlineStatus,      // 大纲生成状态
       lastSavedAt: state.lastSavedAt,          // 最后保存时间
@@ -156,8 +213,10 @@ function saveState(state: GeneratorState) {
       imageModelName: state.imageModelName         // 图片模型（服务商）
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave))
+    useStudioSession().localStorageError = ''
   } catch (e) {
     console.error('保存状态失败:', e)
+    useStudioSession().localStorageError = '本机草稿保存失败，请勿刷新或关闭页面。请保存为作品或释放浏览器存储空间后重试。'
   }
 }
 
@@ -166,6 +225,25 @@ export const useGeneratorStore = defineStore('generator', {
   state: (): GeneratorState => {
     const saved = loadState()
     return {
+      outlineAudience: saved.outlineAudience || '自动判断',
+      outlineAudienceDetail: saved.outlineAudienceDetail || '',
+      outlineTone: saved.outlineTone || '自动匹配',
+      outlineOrganization: saved.outlineOrganization || '自动',
+      outlinePageCount: typeof saved.outlinePageCount === 'number' && Number.isInteger(saved.outlinePageCount)
+        && saved.outlinePageCount >= 1 && saved.outlinePageCount <= 15
+        ? saved.outlinePageCount : 'auto',
+      outlineContentForm: typeof saved.outlineContentForm === 'string'
+        ? saved.outlineContentForm as OutlineContentForm : 'auto',
+      outlineInformationDensity: typeof saved.outlineInformationDensity === 'string'
+        ? saved.outlineInformationDensity as InformationDensity : 'auto',
+      outlinePlatform: normalizePublishingPlatform(saved.outlinePlatform),
+      outlineGoal: normalizeGrowthGoal(saved.outlineGoal),
+      imageStyle: normalizeImageStyle(saved.imageStyle, saved.outline?.growth_recommendation),
+      useCoverAsReference: saved.useCoverAsReference === true,
+      imageResolution: saved.imageResolution || '1K',
+      imageAspectRatio: saved.imageAspectRatio || '3:4',
+      imageQuality: saved.imageQuality || 'low',
+      imageOutputFormat: saved.imageOutputFormat || 'png',
       // 当前阶段
       stage: saved.stage || 'input',
 
@@ -176,6 +254,7 @@ export const useGeneratorStore = defineStore('generator', {
 
       // 用户输入的参考内容（选填）
       referenceContent: saved.referenceContent || '',
+      referenceRoles: Array.isArray(saved.referenceRoles) ? saved.referenceRoles : [],
 
 
       // 大纲数据
@@ -206,18 +285,22 @@ export const useGeneratorStore = defineStore('generator', {
 
       // 历史记录ID
       recordId: saved.recordId || null,
+      analysisSnapshots: saved.analysisSnapshots || [],
 
 
       // 用户上传的参考图片（不从 localStorage 恢复）
       userImages: [],
+      referenceImageKey: typeof saved.referenceImageKey === 'string' ? saved.referenceImageKey : '',
 
 
       // 生成的内容数据
-      content: saved.content || {
-        titles: [],
-        copywriting: '',
-        tags: [],
-        status: 'idle'
+      content: {
+        ...(saved.content || {}),
+        titles: saved.content?.titles || [],
+        selectedTitleIndex: selectedTitleIndex(saved.content?.titles || [], saved.content?.selectedTitleIndex),
+        copywriting: saved.content?.copywriting || '',
+        tags: saved.content?.tags || [],
+        status: saved.content?.status || 'idle',
       },
 
 
@@ -261,6 +344,11 @@ export const useGeneratorStore = defineStore('generator', {
      * @param pages 解析后的页面数组
      */
     setOutline(raw: string, pages: Page[]) {
+      this.outline.generation_preferences = undefined
+      this.outline.copy_preferences = undefined
+      this.outline.generation_record_id = undefined
+      this.outline.growth_recommendation = undefined
+      this.outline.organization = undefined
       this.outline.raw = raw
       this.outline.pages = pages
       this.stage = 'outline'
@@ -269,7 +357,7 @@ export const useGeneratorStore = defineStore('generator', {
       this.images = []
       this.taskId = null
       this.progress = { current: 0, total: 0, status: 'idle' }
-      this.content = { titles: [], copywriting: '', tags: [], status: 'idle' }
+      this.content = { titles: [], selectedTitleIndex: 0, copywriting: '', tags: [], status: 'idle' }
     },
 
 
@@ -282,6 +370,8 @@ export const useGeneratorStore = defineStore('generator', {
       const page = this.outline.pages.find(p => p.index === index)
       if (page) {
         page.content = content
+        page.layout = readLayout(content)
+        page.visual_focus = content.match(/(?:画面描述|视觉主体)\s*[:：]\s*([\s\S]*)/)?.[1].trim() || ''
         // 同步更新 raw 文本
         this.syncRawFromPages()
       }
@@ -319,7 +409,7 @@ export const useGeneratorStore = defineStore('generator', {
      * @param type 页面类型：cover-封面, content-内容, summary-总结
      * @param content 页面内容，默认为空
      */
-    addPage(type: 'cover' | 'content' | 'summary', content: string = '') {
+    addPage(type: 'cover' | 'content' | 'summary' | 'infographic', content: string = '') {
       const newPage: Page = {
         index: this.outline.pages.length,
         type,
@@ -337,7 +427,7 @@ export const useGeneratorStore = defineStore('generator', {
      * @param type 页面类型
      * @param content 页面内容
      */
-    insertPage(afterIndex: number, type: 'cover' | 'content' | 'summary', content: string = '') {
+    insertPage(afterIndex: number, type: 'cover' | 'content' | 'summary' | 'infographic', content: string = '') {
       const newPage: Page = {
         index: afterIndex + 1,
         type,
@@ -521,6 +611,8 @@ export const useGeneratorStore = defineStore('generator', {
      * 下次使用时仍是之前的选项（记忆功能）。
      */
     reset() {
+      this.imageStyle = { preset: this.imageStyle.preset, notes: this.imageStyle.notes,
+        ...(this.imageStyle.palette ? { palette: { ...this.imageStyle.palette } } : {}) }
       // 先记住当前提示词选择与模型选择（记忆功能，不随新任务清空）
       const keepOutline = this.outlinePromptName
       const keepContent = this.contentPromptName
@@ -528,6 +620,11 @@ export const useGeneratorStore = defineStore('generator', {
       const keepModelOutline = this.outlineModelName
       const keepModelContent = this.contentModelName
       const keepModelImage = this.imageModelName
+      const keepPageCount = this.outlinePageCount
+      const keepPlatform = this.outlinePlatform
+      const keepGoal = this.outlineGoal
+      const keepContentForm = this.outlineContentForm
+      const keepInformationDensity = this.outlineInformationDensity
 
       // 重置当前阶段为输入阶段
       this.stage = 'input'
@@ -539,6 +636,7 @@ export const useGeneratorStore = defineStore('generator', {
 
       // 清空用户输入的参考内容
       this.referenceContent = ''
+      this.referenceRoles = []
 
 
       // 清空大纲数据
@@ -566,15 +664,18 @@ export const useGeneratorStore = defineStore('generator', {
 
       // 清空历史记录ID
       this.recordId = null
+      this.analysisSnapshots = []
 
 
       // 清空用户上传的参考图片
       this.userImages = []
+      this.referenceImageKey = ''
 
 
       // 重置生成的内容数据
       this.content = {
         titles: [],          // 清空标题列表
+        selectedTitleIndex: 0,
         copywriting: '',     // 清空文案
         tags: [],            // 清空标签列表
         status: 'idle'       // 状态设为空闲
@@ -596,6 +697,11 @@ export const useGeneratorStore = defineStore('generator', {
       this.outlineModelName = keepModelOutline
       this.contentModelName = keepModelContent
       this.imageModelName = keepModelImage
+      this.outlinePageCount = keepPageCount
+      this.outlinePlatform = keepPlatform
+      this.outlineGoal = keepGoal
+      this.outlineContentForm = keepContentForm
+      this.outlineInformationDensity = keepInformationDensity
 
       // 清除 localStorage 中的持久化数据（提示词偏好除外）
       localStorage.removeItem(STORAGE_KEY)
@@ -612,6 +718,8 @@ export const useGeneratorStore = defineStore('generator', {
      * 注意：不能用 $reset()，它会从 localStorage 恢复上一次任务的旧数据。
      */
     prepareNewOutline() {
+      this.imageStyle = { preset: this.imageStyle.preset, notes: this.imageStyle.notes,
+        ...(this.imageStyle.palette ? { palette: { ...this.imageStyle.palette } } : {}) }
       // 保留本次新任务的数据（含提示词与模型选择记忆）
       const keepTopic = this.topic
       const keepReferenceContent = this.referenceContent
@@ -630,7 +738,8 @@ export const useGeneratorStore = defineStore('generator', {
       this.images = []
       this.taskId = null
       this.recordId = null
-      this.content = { titles: [], copywriting: '', tags: [], status: 'idle' }
+      this.analysisSnapshots = []
+      this.content = { titles: [], selectedTitleIndex: 0, copywriting: '', tags: [], status: 'idle' }
       this.outlineStatus = 'idle'
       this.lastSavedAt = null
 
@@ -667,7 +776,9 @@ export const useGeneratorStore = defineStore('generator', {
      * @param tags 标签列表
      */
     setContent(titles: string[], copywriting: string, tags: string[]) {
+      this.content.source = undefined
       this.content.titles = titles
+      this.content.selectedTitleIndex = 0
       this.content.copywriting = copywriting
       this.content.tags = tags
       this.content.status = 'done'
@@ -692,6 +803,7 @@ export const useGeneratorStore = defineStore('generator', {
     clearContent() {
       this.content = {
         titles: [],
+        selectedTitleIndex: 0,
         copywriting: '',
         tags: [],
         status: 'idle'
@@ -795,16 +907,34 @@ export function setupAutoSave() {
   const store = useGeneratorStore()
 
   // 监听关键字段变化并自动保存到localStorage
-  watch(
+  return watch(
     () => ({
       stage: store.stage,                      // 当前阶段
       topic: store.topic,                      // 用户输入的主题
       referenceContent: store.referenceContent,  // 用户输入的参考内容
+      referenceRoles: [...store.referenceRoles],
+      referenceImageKey: store.referenceImageKey,
+      outlineAudience: store.outlineAudience,
+      outlineAudienceDetail: store.outlineAudienceDetail,
+      outlineOrganization: store.outlineOrganization,
+      outlineTone: store.outlineTone,
+      outlinePageCount: store.outlinePageCount,
+      outlinePlatform: store.outlinePlatform,
+      outlineGoal: store.outlineGoal,
+      outlineContentForm: store.outlineContentForm,
+      outlineInformationDensity: store.outlineInformationDensity,
+      imageStyle: store.imageStyle,
+      imageResolution: store.imageResolution,
+      imageAspectRatio: store.imageAspectRatio,
+      imageQuality: store.imageQuality,
+      imageOutputFormat: store.imageOutputFormat,
+      useCoverAsReference: store.useCoverAsReference,
       outline: store.outline,                  // 大纲数据
       progress: store.progress,                // 生成进度
       images: store.images,                    // 生成的图片结果
       taskId: store.taskId,                    // 任务ID
       recordId: store.recordId,                // 历史记录ID
+      analysisSnapshots: store.analysisSnapshots,
       content: store.content,                  // 生成的内容
       outlineStatus: store.outlineStatus,      // 大纲生成状态
       lastSavedAt: store.lastSavedAt,          // 最后保存时间

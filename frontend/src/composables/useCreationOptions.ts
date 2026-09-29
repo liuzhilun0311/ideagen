@@ -1,16 +1,19 @@
 import { ref } from 'vue'
 import { getConfig, getPrompts, type Config, type PromptItem } from '../api'
+import { usePromptCatalogStore } from '../features/promptCatalog'
 import { useGeneratorStore } from '../stores/generator'
 import { normalizeApiError, type AppError } from '../utils/errors'
 import { useStudioSession } from '../stores/studioSession'
 
-export interface ModelOption { name: string; label: string }
+export interface ModelOption { name: string; label: string; model?: string; type?: string }
 
 function enabledModels(section: Config['text_generation']): ModelOption[] {
   return Object.entries(section.providers)
     .filter(([, provider]) => provider && provider.enabled !== false)
     .map(([name, provider]) => ({
       name,
+      model: provider.model,
+      type: provider.type,
       label: provider.display_name || (provider.model ? `${name} · ${provider.model}` : name),
     }))
 }
@@ -26,6 +29,7 @@ export function useCreationOptions() {
   const prompts = ref<{ outline: PromptItem[]; image: PromptItem[]; content: PromptItem[] }>({
     outline: [], image: [], content: [],
   })
+  const catalog = usePromptCatalogStore()
   let pending: Promise<void> | null = null
 
   function load(): Promise<void> {
@@ -39,9 +43,12 @@ export function useCreationOptions() {
     loading.value = true
     refreshNeeded.value = false
     error.value = null
+    void catalog.refresh()
     pending = (async () => {
       try {
-        const [configuration, promptResponse] = await Promise.all([getConfig(), getPrompts()])
+        const [configuration, promptResponse] = await Promise.all([
+          getConfig(), getPrompts(),
+        ])
         if (!canApply()) {
           refreshNeeded.value = true
           return
@@ -79,5 +86,5 @@ export function useCreationOptions() {
     return pending
   }
 
-  return { loading, refreshNeeded, error, textModels, imageModels, prompts, load }
+  return { loading, refreshNeeded, error, textModels, imageModels, prompts, catalog, load }
 }

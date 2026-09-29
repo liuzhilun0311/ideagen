@@ -6,6 +6,7 @@ import {
 import type {
   HistoryDetail,
   HistoryRecord,
+  HistorySource,
   Page,
   UpdateHistoryParams
 } from './types'
@@ -14,7 +15,8 @@ import type { AppError } from '../utils/errors'
 export async function createHistory(
   topic: string,
   outline: { raw: string; pages: Page[] },
-  taskId?: string
+  taskId?: string,
+  generationAudit?: import('./types').GenerationAudit,
 ): Promise<{ success: boolean; record_id?: string; error?: AppError | string; error_message?: string }> {
   try {
     const response = await axios.post(
@@ -22,7 +24,8 @@ export async function createHistory(
       {
         topic,
         outline,
-        task_id: taskId
+        task_id: taskId,
+        generation_audit: generationAudit,
       },
       {
         timeout: 10000
@@ -37,7 +40,9 @@ export async function createHistory(
 export async function getHistoryList(
   page: number = 1,
   pageSize: number = 20,
-  status?: string
+  status?: string,
+  source?: HistorySource,
+  keyword?: string
 ): Promise<{
   success: boolean
   records: HistoryRecord[]
@@ -51,6 +56,8 @@ export async function getHistoryList(
   try {
     const params: any = { page, page_size: pageSize }
     if (status) params.status = status
+    if (source) params.source = source
+    if (keyword?.trim()) params.keyword = keyword.trim()
 
     const response = await axios.get(`${API_BASE_URL}/history`, {
       params,
@@ -156,7 +163,7 @@ export async function searchHistory(keyword: string): Promise<{
   }
 }
 
-export async function getHistoryStats(): Promise<{
+export async function getHistoryStats(source?: HistorySource): Promise<{
   success: boolean
   total: number
   by_status: Record<string, number>
@@ -165,11 +172,37 @@ export async function getHistoryStats(): Promise<{
 }> {
   try {
     const response = await axios.get(`${API_BASE_URL}/history/stats`, {
+      params: source ? { source } : {},
       timeout: 10000
     })
     return response.data
   } catch (error: any) {
     return { success: false, total: 0, by_status: {}, ...getApiErrorPayload(error, '获取统计信息失败') }
+  }
+}
+
+export interface WorkSharingResponse {
+  success: boolean
+  user_ids: string[]
+  error?: AppError | string
+  error_message?: string
+}
+
+export async function getHistorySharing(recordId: string): Promise<WorkSharingResponse> {
+  try {
+    const response = await axios.get(`${API_BASE_URL}/history/${recordId}/sharing`, { timeout: 10000 })
+    return response.data
+  } catch (error) {
+    return { success: false, user_ids: [], ...getApiErrorPayload(error, '读取共享配置失败') }
+  }
+}
+
+export async function setHistorySharing(recordId: string, userIds: string[]): Promise<WorkSharingResponse> {
+  try {
+    const response = await axios.put(`${API_BASE_URL}/history/${recordId}/sharing`, { user_ids: userIds }, { timeout: 10000 })
+    return response.data
+  } catch (error) {
+    return { success: false, user_ids: [], ...getApiErrorPayload(error, '保存共享配置失败') }
   }
 }
 

@@ -29,7 +29,7 @@
             />
             <button v-if="local.name" type="button" class="input-clear" title="清空" @click="local.name = ''">×</button>
           </div>
-          <span class="form-hint">唯一标识，用于区分不同服务商</span>
+          <span class="form-hint">服务商名称</span>
         </div>
 
         <!-- 类型选择 -->

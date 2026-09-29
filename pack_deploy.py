@@ -14,12 +14,13 @@ OUT = ROOT / 'ideagen_deploy.zip'
 # 注意：backend/history 是 Django 代码，必须保留；根目录的 history/ 才是运行时数据
 EXCLUDE_DIRS = {
     '.venv', 'node_modules', '__pycache__', '.git', 'dist', 'tests',
+    '.superpowers', '.pytest_cache', 'test-results', 'staticfiles',
 }
 # 项目根目录下的运行时数据目录（只排除顶层，任意层级出现不算）
 EXCLUDE_ROOT_DIRS = {'history', 'output', 'user_configs', 'data'}
 EXCLUDE_FILES = {
-    'ideagen_deploy.zip', 'db.sqlite3', '.dockerignore', 'pack_deploy.py',
-    'start_dev.bat', 'README.md',
+    'ideagen_deploy.zip', 'db.sqlite3',
+    'image_providers.yaml', 'text_providers.yaml',
 }
 
 
@@ -35,7 +36,9 @@ def _skip(rel: str, is_dir: bool) -> bool:
         return False
     if name in EXCLUDE_FILES:
         return True
-    if name.endswith(('.pyc', '.log')):
+    if name == '.env' or (name.startswith('.env.') and name != '.env.example'):
+        return True
+    if name.endswith(('.pyc', '.log', '.sqlite3', '.db', '.zip', '.pem', '.key')):
         return True
     return False
 
@@ -54,7 +57,7 @@ def main():
                 count += 1
     size = OUT.stat().st_size / 1024 / 1024
     print(f"打包完成: {OUT.name}（{size:.1f} MB，{count} 个文件）")
-    print("警告：包内含 image_providers.yaml / text_providers.yaml（带 API Key），请勿公开分享。")
+    print("部署包不含真实服务商配置及用户数据；部署时需单独配置，迁移数据请按部署说明备份。")
 
 
 if __name__ == '__main__':

@@ -30,8 +30,10 @@ export async function getPrompts(): Promise<PromptsResponse> {
   return response.data
 }
 
-export async function savePrompt(kind: PromptKind, name: string, content: string) {
-  const response = await axios.post(`${API_BASE_URL}/prompts/save`, { kind, name, content })
+export async function savePrompt(kind: PromptKind, name: string, content: string, originalName?: string) {
+  const response = await axios.post(`${API_BASE_URL}/prompts/save`, {
+    kind, name, content, ...(originalName ? { original_name: originalName } : {}),
+  })
   return response.data
 }
 

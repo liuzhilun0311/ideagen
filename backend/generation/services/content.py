@@ -26,7 +26,7 @@ class ContentService:
         logger.debug("初始化 ContentService...")
         self.user_id = user_id
         self.text_config = load_text_providers_config(user_id)
-        self.client = self._get_client()
+        self.client = None
         self.prompt_template = self._load_prompt_template()
         logger.info(f"ContentService 初始化完成，使用服务商: {self.text_config.get('active_provider')}")
 
@@ -88,6 +88,7 @@ class ContentService:
         outline: str,
         prompt_text: Optional[str] = None,
         provider_name: Optional[str] = None,
+        prepared_prompt: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         生成标题、文案和标签
@@ -106,7 +107,9 @@ class ContentService:
             logger.info(f"开始生成内容: topic={topic[:50]}...")
 
             # 构建提示词
-            if prompt_text:
+            if prepared_prompt is not None:
+                prompt = prepared_prompt
+            elif prompt_text:
                 # 使用用户自定义提示词（缺失占位符原样保留，不报错）
                 prompt = safe_format(prompt_text, {"topic": topic, "outline": outline})
             else:
@@ -118,7 +121,7 @@ class ContentService:
             # 从配置中获取模型参数（provider_name 为空时使用当前激活服务商）
             provider_config = get_text_provider_config(provider_name, self.user_id)
             # 指定了服务商时按该服务商新建客户端，否则沿用初始化时的客户端
-            client = get_text_chat_client(provider_config) if provider_name else self.client
+            client = get_text_chat_client(provider_config) if provider_name else self.client or self._get_client()
 
             model = provider_config.get('model', 'gemini-2.0-flash-exp')
             temperature = provider_config.get('temperature', 1.0)
@@ -141,6 +144,8 @@ class ContentService:
 
             # 解析 JSON 响应
             content_data = self._parse_json_response(response_text)
+            if not isinstance(content_data, dict):
+                raise ValueError("文案响应必须是 JSON 对象。")
 
             # 验证必要字段
             titles = content_data.get('titles', [])
@@ -154,6 +159,12 @@ class ContentService:
             # 确保 tags 是列表
             if isinstance(tags, str):
                 tags = [t.strip() for t in tags.split(',')]
+            if (not isinstance(titles, list) or not titles
+                    or any(not isinstance(title, str) or not title.strip() for title in titles)
+                    or not isinstance(copywriting, str) or not copywriting.strip()
+                    or not isinstance(tags, list)
+                    or any(not isinstance(tag, str) or not tag.strip() for tag in tags)):
+                raise ValueError("文案响应缺少有效标题、正文或标签，未覆盖已有内容。")
 
             logger.info(f"内容生成完成: {len(titles)} 个标题, {len(tags)} 个标签")
 

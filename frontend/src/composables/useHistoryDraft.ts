@@ -7,6 +7,9 @@ import { useStudioSession } from '../stores/studioSession'
 import { useAuthStore } from '../stores/auth'
 import { getToken } from '../api/token'
 import { normalizeApiError, type AppError } from '../utils/errors'
+import { normalizeImageStyle } from '../features/styles/catalog'
+import { selectedTitleIndex as normalizeTitleIndex } from '../utils/publicationContent'
+import { restoreCreationInputs } from '../features/creationInputs'
 
 export function useHistoryDraft(
   router: Pick<Router, 'push'>,
@@ -41,7 +44,7 @@ export function useHistoryDraft(
     try {
       // Resuming never reads history, even if local edits removed every page.
       if (store.recordId === id) {
-        await router.push(store.outline.pages.length ? '/workspace' : '/')
+        await router.push(store.outline.pages.length ? session.workspacePath : '/')
         return true
       }
       if (session.busy) return refuse('创作任务正在进行，请等待任务结束后再替换当前草稿。')
@@ -76,11 +79,13 @@ export function useHistoryDraft(
         throw response.error || response.error_message || '打开历史记录失败'
       }
       const record = response.record
+      if (record.can_edit === false) return refuse('共享作品仅可查看，不能载入创作区修改。')
       if (record.id !== id) return refuse('返回的作品与所选记录不一致，请刷新列表后重试。')
 
       // Prepare independent values before obtaining permission to mutate the draft.
       const pages = record.outline.pages.map(page => ({ ...page }))
       const titles = [...(record.content?.titles || [])]
+      const selectedTitleIndex = normalizeTitleIndex(titles, record.content?.selected_title_index)
       const tags = [...(record.content?.tags || [])]
       const taskId = record.images.task_id
       const generated = record.images.generated || []
@@ -98,10 +103,33 @@ export function useHistoryDraft(
       store.setTopic(record.title)
       store.referenceContent = ''
       store.userImages = []
+      restoreCreationInputs(store, record.outline.creation_inputs)
       store.setOutline(record.outline.raw, pages)
+      store.outline.organization = record.outline.organization
+      store.outline.generation_preferences = record.outline.generation_preferences
+      store.outline.requested_preferences = record.outline.requested_preferences
+      store.outline.copy_preferences = record.outline.copy_preferences
+      store.outline.generation_record_id = record.outline.generation_record_id
+      store.outline.growth_recommendation = record.outline.growth_recommendation
+      const requested = record.outline.requested_preferences || record.outline.generation_preferences
+      store.outlineAudience = requested?.audience || '自动判断'
+      store.outlineAudienceDetail = requested?.audience_detail || ''
+      store.outlineTone = requested?.tone || '自动匹配'
+      store.outlineOrganization = requested?.organization || record.outline.organization || '自动'
+      store.outlinePageCount = requested?.page_count || 'auto'
+      store.outlineContentForm = requested?.content_form || 'auto'
+      store.outlineInformationDensity = requested?.information_density || 'auto'
+      store.outlinePlatform = (record.outline.requested_preferences || record.outline.generation_preferences)?.platform || 'auto'
+      store.outlineGoal = (record.outline.requested_preferences || record.outline.generation_preferences)?.goal || 'auto'
       store.setRecordId(record.id)
+      store.imageStyle = normalizeImageStyle(record.image_style, record.outline.growth_recommendation)
       store.lastSavedAt = record.updated_at || null
-      if (record.content) store.setContent(titles, record.content.copywriting || '', tags)
+      if (record.content) {
+        store.setContent(titles, record.content.copywriting || '', tags)
+        store.content.diagnostic_record_id = record.content.diagnostic_record_id
+        store.content.selectedTitleIndex = Math.min(selectedTitleIndex, Math.max(0, titles.length - 1))
+      }
+      if (record.content?.source) store.content.source = { ...record.content.source }
       store.taskId = taskId
       store.images = images
       store.syncImageProgress()

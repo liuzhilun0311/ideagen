@@ -2,18 +2,22 @@
 import logging
 import os
 import uuid
+import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, Generator, List, Optional, Tuple
 
 from django.conf import settings
 
 from providers.config import get_active_image_provider, get_image_provider_config
-from prompts.services import safe_format
+from ..styles import format_image_prompt
+from ..structure import image_page_content
 from ..generators.factory import ImageGeneratorFactory
 from ..generators.image_provider_policy import ImageProviderPolicy
 from ..utils.image_compressor import compress_image
 from .image_rate_limiter import ImageRateLimiter
 from .task_cancel import is_cancelled, reset_cancel
+from ..diagnostics import record, capture
+from ..image_output import encode_output
 from history.services import get_history_service
 
 logger = logging.getLogger(__name__)
@@ -163,6 +167,8 @@ class ImageService:
 
         # 生成缩略图（50KB左右）
         thumbnail_data = compress_image(image_data, max_size_kb=50)
+        extension = filename.rsplit(".", 1)[-1].lower()
+        thumbnail_data, _ = encode_output(thumbnail_data, "jpeg" if extension == "jpg" else extension)
         thumbnail_filename = f"thumb_{filename}"
         thumbnail_path = os.path.join(task_dir, thumbnail_filename)
         with open(thumbnail_path, "wb") as f:
@@ -224,6 +230,7 @@ class ImageService:
         total_count: Optional[int] = None,
         task_dir: Optional[str] = None,
         prompt_text: Optional[str] = None,
+        generation_id: Optional[str] = None,
     ) -> Tuple[int, bool, Optional[str], Optional[str]]:
         """
         生成单张图片（带自动重试）
@@ -243,7 +250,14 @@ class ImageService:
         """
         index = page["index"]
         page_type = page["type"]
-        page_content = page["content"]
+        page_content = image_page_content(page)
+        if user_images is None and record_id:
+            from history.models import HistoryRecord
+            saved_record = HistoryRecord.objects.filter(pk=record_id).first()
+            if saved_record:
+                saved_inputs = (saved_record.outline or {}).get("creation_inputs") or {}
+                user_images = [base64.b64decode(item["data"].split(",", 1)[1], validate=True)
+                               for item in saved_inputs.get("reference_images", [])]
 
         # 用户已取消：不再发起该页生成
         if is_cancelled(self.user_id or self.current_user_id):
@@ -252,34 +266,36 @@ class ImageService:
         try:
             logger.debug(f"生成图片 [{index}]: type={page_type}")
 
-            # 根据配置选择模板（短 prompt 或完整 prompt）
-            if prompt_text:
-                # 用户自定义提示词优先（缺失占位符原样保留，不报错）
-                prompt = safe_format(prompt_text, {
-                    "page_content": page_content,
-                    "page_type": page_type,
-                    "full_outline": full_outline,
-                    "user_topic": user_topic if user_topic else "未提供",
-                })
-                logger.debug(f"  使用用户自定义提示词 ({len(prompt)} 字符)")
-            elif self.use_short_prompt and self.prompt_template_short:
-                # 短 prompt 模式：只包含页面类型和内容
-                prompt = self.prompt_template_short.format(
-                    page_content=page_content,
-                    page_type=page_type
-                )
-                logger.debug(f"  使用短 prompt 模式 ({len(prompt)} 字符)")
-            else:
-                # 完整 prompt 模式：包含大纲和用户需求
-                prompt = self.prompt_template.format(
-                    page_content=page_content,
-                    page_type=page_type,
-                    full_outline=full_outline,
-                    user_topic=user_topic if user_topic else "未提供"
-                )
+            template = prompt_text or (
+                self.prompt_template_short if self.use_short_prompt and self.prompt_template_short
+                else self.prompt_template
+            )
+            prompt = format_image_prompt(template, {
+                "page_content": page_content, "page_type": page_type,
+                "full_outline": full_outline, "user_topic": user_topic or "未提供",
+            })
 
+            request_meta = {
+                "event": "request", "page_index": index,
+                "provider": self.provider_name, "model": self.provider_config.get("model"),
+                "endpoint": self.policy.endpoint_type, "prompt": prompt,
+                "catalog_snapshot": template.audit(page_content) if hasattr(template, "audit") else [],
+                "prompt_length": len(prompt),
+                "references": {"count": len(user_images or []) + (1 if reference_image else 0),
+                               "user_count": len(user_images or []),
+                               "cover_count": 1 if reference_image else 0,
+                               "mode": "reference" if (user_images or reference_image) else "text_to_image"},
+                "parameters": {"resolution": self.provider_config.get("image_size") or "1K",
+                               "aspect_ratio": self.provider_config.get("default_aspect_ratio", "3:4"),
+                               "image_size": self.provider_config.get("image_size") or self.provider_config.get("default_size") or "1K",
+                               "quality": self.provider_config.get("quality") or "low",
+                               "output_format": self.provider_config.get("output_format") or "png"},
+            }
+            if generation_id:
+                request_meta["generation_id"] = generation_id
+            record(task_id, request_meta)
             # 调用生成器生成图片。所有路径共用 limiter，避免批量和重试打爆上游。
-            with self.rate_limiter.acquire():
+            with self.rate_limiter.acquire(), capture(task_id, index, generation_id):
                 if self.provider_config.get('type') == 'google_genai':
                     logger.debug(f"  使用 Google GenAI 生成器")
                     image_data = self.generator.generate_image(
@@ -288,6 +304,7 @@ class ImageService:
                         temperature=self.provider_config.get('temperature', 1.0),
                         model=self.provider_config.get('model', 'gemini-3-pro-image-preview'),
                         reference_image=reference_image,
+                        reference_images=user_images or None,
                     )
                 elif self.provider_config.get('type') == 'image_api':
                     logger.debug(f"  使用 Image API 生成器")
@@ -308,11 +325,18 @@ class ImageService:
                     )
                 else:
                     logger.debug(f"  使用 OpenAI 兼容生成器")
+                    reference_images = []
+                    if user_images:
+                        reference_images.extend(user_images)
+                    if reference_image:
+                        reference_images.append(reference_image)
                     image_data = self.generator.generate_image(
                         prompt=prompt,
                         size=self.provider_config.get('default_size', '1024x1024'),
                         model=self.provider_config.get('model'),
                         quality=self.provider_config.get('quality', 'standard'),
+                        aspect_ratio=self.provider_config.get('default_aspect_ratio', '3:4'),
+                        reference_images=reference_images or None,
                     )
 
             # 生成过程中用户取消：丢弃结果，不保存、不合并
@@ -320,9 +344,15 @@ class ImageService:
                 return (index, False, None, '已取消')
 
             # 保存图片（优先使用显式传入的任务目录，避免并发请求串写）
-            filename = f"{index}.png"
+            output_format = self.provider_config.get("output_format", "png")
+            image_data, actual_output = encode_output(image_data, output_format)
+            filename = f"{index}.{output_format}"
             self._save_image(image_data, filename, task_dir or self.current_task_dir)
             logger.info(f"✅ 图片 [{index}] 生成成功: {filename}")
+            record(task_id, {"event": "response", "page_index": index, "status": "success",
+                             **({"generation_id": generation_id} if generation_id else {}),
+                             "image_bytes": len(image_data), "actual_output": actual_output,
+                             "content_verified": False})
 
             if record_id:
                 self._merge_image_into_record(
@@ -337,6 +367,9 @@ class ImageService:
 
         except Exception as e:
             error_msg = str(e)
+            record(task_id, {"event": "response", "page_index": index, "status": "error",
+                             **({"generation_id": generation_id} if generation_id else {}),
+                             "error": error_msg[:2000]})
             logger.error(f"❌ 图片 [{index}] 生成失败: {error_msg[:200]}")
             return (index, False, None, error_msg)
 
@@ -351,6 +384,7 @@ class ImageService:
         force: bool = False,
         user_id: Optional[str] = None,
         image_prompt_text: Optional[str] = None,
+        use_reference: bool = True,
     ) -> Generator[Dict[str, Any], None, None]:
         """
         生成图片（生成器，支持 SSE 流式返回）
@@ -400,6 +434,7 @@ class ImageService:
         generated_images = [""] * total
         failed_pages = []
         cover_image_data = None
+        reference_for_pages = None
 
         # 压缩用户上传的参考图到200KB以内（减少内存和传输开销）
         compressed_user_images = None
@@ -466,6 +501,7 @@ class ImageService:
                 # 压缩封面图（减少内存占用和后续传输开销）
                 cover_image_data = compress_image(cover_image_data, max_size_kb=200)
                 self._task_states[task_id]["cover_image"] = cover_image_data
+                reference_for_pages = cover_image_data if use_reference else None
 
                 yield {
                     "event": "complete",
@@ -516,7 +552,7 @@ class ImageService:
                             self._generate_single_image,
                             page,
                             task_id,
-                            cover_image_data,  # 使用封面作为参考
+                            reference_for_pages,  # 可选：使用封面作为参考
                             0,  # retry_count
                             full_outline,  # 传入完整大纲
                             compressed_user_images,  # 用户上传的参考图片（已压缩）
@@ -621,7 +657,7 @@ class ImageService:
                     index, success, filename, error = self._generate_single_image(
                         page,
                         task_id,
-                        cover_image_data,
+                        reference_for_pages,
                         0,
                         full_outline,
                         compressed_user_images,
@@ -744,6 +780,7 @@ class ImageService:
         record_id: Optional[str] = None,
         user_id: Optional[str] = None,
         image_prompt_text: Optional[str] = None,
+        user_images=None,
     ) -> Dict[str, Any]:
         """
         重试生成单张图片
@@ -771,7 +808,6 @@ class ImageService:
         self.current_task_dir = task_dir
 
         reference_image = None
-        user_images = None
 
         # 首先尝试从任务状态中获取上下文
         if task_id in self._task_states:
@@ -783,10 +819,17 @@ class ImageService:
                 full_outline = task_state.get("full_outline", "")
             if not user_topic:
                 user_topic = task_state.get("user_topic", "")
-            user_images = task_state.get("user_images")
+            if user_images is None:
+                user_images = task_state.get("user_images")
 
         # 如果任务状态中没有封面图，尝试从文件系统加载
-        if use_reference and reference_image is None:
+        if record_id:
+            from history.models import HistoryRecord
+            from ..candidates import cover_reference
+            saved_record = HistoryRecord.objects.filter(pk=record_id).first()
+            if saved_record:
+                reference_image = cover_reference(saved_record, page["index"], use_reference)
+        elif use_reference and reference_image is None:
             cover_path = os.path.join(task_dir, "0.png")
             if os.path.exists(cover_path):
                 with open(cover_path, "rb") as f:
@@ -838,6 +881,7 @@ class ImageService:
         record_id: Optional[str] = None,
         user_id: Optional[str] = None,
         image_prompt_text: Optional[str] = None,
+        use_reference: bool = True,
     ) -> Generator[Dict[str, Any], None, None]:
         """
         批量重试失败的图片
@@ -867,11 +911,11 @@ class ImageService:
         user_topic = ""
         if task_id in self._task_states:
             task_state = self._task_states[task_id]
-            reference_image = task_state.get("cover_image")
+            reference_image = task_state.get("cover_image") if use_reference else None
             user_images = task_state.get("user_images")
             user_topic = task_state.get("user_topic", "")
 
-        if reference_image is None:
+        if use_reference and reference_image is None:
             cover_path = os.path.join(task_dir, "0.png")
             if os.path.exists(cover_path):
                 with open(cover_path, "rb") as f:
@@ -900,6 +944,17 @@ class ImageService:
             record = self.history_service.get_record(record_id)
             if record:
                 total_count = total_count or len(record.get("outline", {}).get("pages", []))
+
+        saved_record = None
+        if record_id:
+            from history.models import HistoryRecord
+            saved_record = HistoryRecord.objects.filter(pk=record_id).first()
+
+        def page_reference(page):
+            if saved_record:
+                from ..candidates import cover_reference
+                return cover_reference(saved_record, page["index"], use_reference)
+            return reference_image if use_reference and page["index"] != 0 else None
 
         def handle_result(page: Dict, result: Tuple[int, bool, Optional[str], Optional[str]]):
             nonlocal success_count, failed_count
@@ -937,7 +992,7 @@ class ImageService:
                         self._generate_single_image,
                         page,
                         task_id,
-                        reference_image,
+                        page_reference(page),
                         0,
                         full_outline,
                         user_images,
@@ -970,7 +1025,7 @@ class ImageService:
                 result = self._generate_single_image(
                     page,
                     task_id,
-                    reference_image,
+                    page_reference(page),
                     0,
                     full_outline,
                     user_images,
@@ -1002,6 +1057,7 @@ class ImageService:
         record_id: Optional[str] = None,
         user_id: Optional[str] = None,
         image_prompt_text: Optional[str] = None,
+        user_images=None,
     ) -> Dict[str, Any]:
         """
         重新生成图片（用户手动触发，即使成功的也可以重新生成）
@@ -1024,7 +1080,8 @@ class ImageService:
             user_topic=user_topic,
             record_id=record_id,
             user_id=user_id,
-            image_prompt_text=image_prompt_text
+            image_prompt_text=image_prompt_text,
+            user_images=user_images,
         )
 
     def get_image_path(self, task_id: str, filename: str, user_id: Optional[str] = None) -> str:

@@ -1,6 +1,8 @@
 """Google GenAI 图片生成器"""
 import logging
 import base64
+import io
+from PIL import Image
 from typing import Dict, Any, Optional
 from google import genai
 from google.genai import types
@@ -333,6 +335,7 @@ class GoogleGenAIGenerator(ImageGeneratorBase):
         temperature: float = 1.0,
         model: str = "gemini-3-pro-image-preview",
         reference_image: Optional[bytes] = None,
+        reference_images=None,
         **kwargs
     ) -> bytes:
         """
@@ -355,34 +358,20 @@ class GoogleGenAIGenerator(ImageGeneratorBase):
         # 构建 parts 列表
         parts = []
 
-        # 如果有参考图，先添加参考图和说明
+        references = list(reference_images or [])
         if reference_image:
-            logger.debug(f"  添加参考图片 ({len(reference_image)} bytes)")
-            # 压缩参考图到 200KB 以内
-            compressed_ref = compress_image(reference_image, max_size_kb=200)
-            logger.debug(f"  参考图压缩后: {len(compressed_ref)} bytes")
-            # 添加参考图
+            references.append(reference_image)
+        for reference in references:
+            compressed_ref = compress_image(reference, max_size_kb=200)
+            with Image.open(io.BytesIO(compressed_ref)) as decoded:
+                mime = Image.MIME[decoded.format]
             parts.append(types.Part(
                 inline_data=types.Blob(
-                    mime_type="image/png",
+                    mime_type=mime,
                     data=compressed_ref
                 )
             ))
-            # 添加带参考说明的提示词
-            enhanced_prompt = f"""请参考上面这张图片的视觉风格（包括配色、排版风格、字体风格、装饰元素风格），生成一张风格一致的新图片。
-
-新图片的内容要求：
-{prompt}
-
-重要：
-1. 必须保持与参考图相同的视觉风格和设计语言
-2. 配色方案要与参考图协调一致
-3. 排版和装饰元素的风格要统一
-4. 但内容要按照新的要求来生成"""
-            parts.append(types.Part(text=enhanced_prompt))
-        else:
-            # 没有参考图，直接使用原始提示词
-            parts.append(types.Part(text=prompt))
+        parts.append(types.Part(text=prompt))
 
         contents = [
             types.Content(
@@ -393,6 +382,7 @@ class GoogleGenAIGenerator(ImageGeneratorBase):
 
         image_config_kwargs = {
             "aspect_ratio": aspect_ratio,
+            "image_size": self.config.get("image_size", "1K"),
         }
 
         # 只有在 Vertex AI 模式下才支持 output_mime_type

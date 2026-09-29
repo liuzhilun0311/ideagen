@@ -90,7 +90,7 @@ describe('isolated management preview', () => {
     await client.put(`/api/history/${first}`, { title: 'Edited', content: { titles: [], copywriting: 'Searchable copy', tags: [] }, status: 'partial', id: 'must-not-change' })
     const detail = (await client.get(`/api/history/${first}`)).data.record
     expect(detail).toMatchObject({ id: first, title: 'Edited', status: 'partial', images: { task_id: null, generated: [] } })
-    expect((await client.get('/api/history/preview-record')).data.record).toEqual(previewRecord)
+    expect((await client.get('/api/history/preview-record')).data.record).toMatchObject(previewRecord)
     const list = (await client.get('/api/history', { params: { page: 1, page_size: 1, status: 'draft' } })).data
     expect(list).toMatchObject({ total: 1, page: 1, page_size: 1, total_pages: 1 })
     expect(list.records[0]).toMatchObject({ id: second, page_count: 3, task_id: null })
@@ -199,5 +199,103 @@ describe('delayed generation preview', () => {
     const events = await response.text()
     expect(events).toContain('event: retry_finish')
     expect(events).toContain('"completed":1,"failed":0')
+  })
+})
+
+describe('runtime postprocessing preview', () => {
+  const endpoint = '/api/postprocessing/preview-record'
+  it('restores originals, advances queued/processing/done and preserves explicit adoption', async () => {
+    vi.useFakeTimers()
+    const { client } = setup()
+    const original = (await client.get(endpoint)).data
+    expect(original.preferences).toEqual({ automatic: false, strength: 'light' })
+    expect(original.pages).toHaveLength(3)
+    expect(original.pages[0]).toMatchObject({ status: 'idle', adopted: 'original', processed_url: null })
+    await client.post(endpoint, { action: 'preferences', automatic: true, strength: 'medium' })
+    expect((await client.get(endpoint)).data.pages[0].status).toBe('idle')
+    const queued = (await client.post(endpoint, { action: 'process', indices: [0, 1], strength: 'heavy', force: false })).data
+    expect(queued.pages.map((page: any) => page.status)).toEqual(['queued', 'queued', 'idle'])
+    await vi.advanceTimersByTimeAsync(1800)
+    expect((await client.get(endpoint)).data.pages[0].status).toBe('processing')
+    await client.post(endpoint, { action: 'adopt', index: 0, version: 'original', source_revision: original.pages[0].source_revision })
+    await vi.advanceTimersByTimeAsync(1800)
+    const done = (await client.get(endpoint)).data
+    expect(done.pages[0]).toMatchObject({ status: 'done', strength: 'heavy', adopted: 'original' })
+    expect(done.pages[1]).toMatchObject({ status: 'done', strength: 'heavy', adopted: 'processed' })
+    expect(done.preferences).toEqual({ automatic: true, strength: 'medium' })
+    const mapped = previewImageUrl(done.pages[0].processed_url + '?token=synthetic', 'http://localhost')
+    expect(existsSync(resolve('public', mapped.slice(1)))).toBe(true)
+    expect(mapped).not.toContain('token')
+    const external = `https://external.invalid${done.pages[0].processed_url}`
+    expect(previewImageUrl(external, 'http://localhost')).toBe(external)
+    done.pages[0].adopted = 'processed'
+    expect((await client.get(endpoint)).data.pages[0].adopted).toBe('original')
+  })
+
+  it('keeps mutations, jobs and preferences isolated between records and fixture runtimes', async () => {
+    vi.useFakeTimers()
+    const { client } = setup()
+    const id = (await client.post('/api/history', { topic: 'Second', outline: previewRecord.outline })).data.record_id
+    await client.put(`/api/history/${id}`, { images: previewRecord.images })
+    const other = `/api/postprocessing/${id}`
+    await client.post(endpoint, { action: 'preferences', automatic: true, strength: 'heavy' })
+    await client.post(endpoint, { action: 'process', indices: [0], strength: 'heavy', force: false })
+    await vi.advanceTimersByTimeAsync(3600)
+    const done = (await client.get(endpoint)).data
+    await client.post(endpoint, { action: 'adopt', index: 0, version: 'original', source_revision: done.pages[0].source_revision })
+    expect((await client.get(other)).data).toMatchObject({
+      preferences: { automatic: false, strength: 'light' },
+      pages: [{ index: 0, status: 'idle', adopted: 'original' }, { index: 1, status: 'idle' }, { index: 2, status: 'idle' }],
+    })
+    expect((await setup().client.get(endpoint)).data.pages[0].status).toBe('idle')
+    await expect(client.post('/api/postprocessing/missing', { action: 'preferences', automatic: true, strength: 'light' }))
+      .rejects.toMatchObject({ response: { status: 404 } })
+    await expect(client.post(other, { action: 'adopt', index: 0, version: 'processed', source_revision: 'stale' }))
+      .rejects.toMatchObject({ response: { status: 409 } })
+    expect((await client.get(endpoint)).data.preferences.strength).toBe('heavy')
+  })
+
+  it('supports optional partial failure and skips existing results unless forced', async () => {
+    vi.useFakeTimers()
+    const fixtures = createPreviewFixtures(0, { failIndices: [1], processingDelay: 100 })
+    const client = axios.create({ adapter: fixtures.adapter })
+    await client.post(endpoint, { action: 'process', indices: [0, 1], strength: 'light', force: false })
+    await vi.advanceTimersByTimeAsync(200)
+    const result = (await client.get(endpoint)).data
+    expect(result.pages[0].status).toBe('done')
+    expect(result.pages[1]).toMatchObject({ status: 'error', processed_url: null, adopted: 'original' })
+    expect(result.pages[1].error).toBeTruthy()
+    await client.post(endpoint, { action: 'process', indices: [0], strength: 'heavy', force: false })
+    expect((await client.get(endpoint)).data.pages[0]).toEqual(result.pages[0])
+    const replacing = (await client.post(endpoint, { action: 'process', indices: [0], strength: 'heavy', force: true })).data
+    expect(replacing.pages[0]).toMatchObject({ status: 'queued', processed_url: result.pages[0].processed_url, strength: 'light' })
+  })
+
+  it('publishes synthetic generated originals immediately and automatically queues only future publications', async () => {
+    const { client, fetch } = setup()
+    const id = (await client.post('/api/history', { topic: 'Generated', outline: previewRecord.outline })).data.record_id
+    const path = `/api/postprocessing/${id}`
+    expect((await client.get(path)).data.pages).toEqual([])
+    const first = await fetch('/api/generate', { method: 'POST', body: JSON.stringify({
+      record_id: id, task_id: 'new-task', pages: [previewPages[0]],
+    }) })
+    await first.text()
+    const source = (await client.get(path)).data.pages[0]
+    expect(source).toMatchObject({ index: 0, status: 'idle', adopted: 'original', processed_url: null })
+    expect(source.original_url).toContain('/api/images/new-task/0.png')
+    await client.post(path, { action: 'preferences', automatic: true, strength: 'medium' })
+    expect((await client.get(path)).data.pages[0].status).toBe('idle')
+    const second = await fetch('/api/generate', { method: 'POST', body: JSON.stringify({
+      record_id: id, task_id: 'new-task', pages: [previewPages[1]],
+    }) })
+    await second.text()
+    expect((await client.get(path)).data.pages.map((page: any) => page.status)).toEqual(['idle', 'queued'])
+    await client.post(path, { action: 'preferences', automatic: false, strength: 'medium' })
+    expect((await client.get(path)).data.pages[1].status).toBe('queued')
+    await client.post('/api/regenerate', { record_id: id, task_id: 'new-task', page: previewPages[0] })
+    const regenerated = (await client.get(path)).data.pages[0]
+    expect(regenerated.source_revision).not.toBe(source.source_revision)
+    await expect(client.post(path, { action: 'adopt', index: 0, version: 'original', source_revision: source.source_revision }))
+      .rejects.toMatchObject({ response: { status: 409 } })
   })
 })

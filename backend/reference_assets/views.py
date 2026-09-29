@@ -2,6 +2,7 @@ import hashlib
 import io
 import json
 import mimetypes
+import shutil
 import uuid
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from PIL import Image, UnidentifiedImageError
 
 from common.api import api_error_response, json_body, require_auth, validation_error
 from prompts import catalog
+from prompts.models import PromptEntry
 
 from .models import ImageAnalysis, ReferenceAsset
 from .protocol import normalize_analysis_payload
@@ -87,6 +89,18 @@ def _save_source_image(owner_id, image):
     return str(path), digest
 
 
+def _copy_source_image(owner_id, analysis_id, source_path):
+    if not source_path:
+        return ""
+    source = _safe_path(source_path)
+    if not source.is_file():
+        return ""
+    target = _safe_root() / str(owner_id) / f"asset-{analysis_id}-{uuid.uuid4().hex}.bin"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target)
+    return str(target)
+
+
 def _delete_path(path):
     if not path:
         return
@@ -96,6 +110,14 @@ def _delete_path(path):
             safe.unlink()
     except (OSError, ValueError):
         return
+
+
+def _image_content_type(path):
+    try:
+        with Image.open(path) as image:
+            return Image.MIME.get(image.format, "application/octet-stream")
+    except (OSError, UnidentifiedImageError):
+        return mimetypes.guess_type(path.name)[0] or "application/octet-stream"
 
 
 def _get_analysis(request, analysis_id):
@@ -211,6 +233,7 @@ def assets(request):
             owner_id=request.user_id,
             analysis=analysis,
             title=str(data.get("title") or "未命名参考素材")[:120],
+            image_path=_copy_source_image(request.user_id, analysis.pk, analysis.source_image_path) if analysis else "",
             content=data.get("content") if isinstance(data.get("content"), dict) else (analysis.content if analysis else {}),
             rewritten_content=str(data.get("rewritten_content") or (analysis.rewritten_content if analysis else "")),
             user_note=str(data.get("user_note") or "")[:2000],
@@ -253,8 +276,7 @@ def asset_image(request, asset_id):
         path = _safe_path(row.image_path)
         if not path.is_file():
             raise FileNotFoundError
-        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        response = FileResponse(path.open("rb"), content_type=content_type)
+        response = FileResponse(path.open("rb"), content_type=_image_content_type(path))
         response["Cache-Control"] = "private, no-store"
         return response
     except (FileNotFoundError, ValueError):
@@ -277,6 +299,19 @@ def create_prompts_from_analysis(request):
     drafts = data.get("drafts") if isinstance(data.get("drafts"), dict) else {}
     names = data.get("names") if isinstance(data.get("names"), dict) else {}
     user = catalog.actor(request.user_id)
+    reference_asset_id = ""
+    if row.source_image_path:
+        image_path = _copy_source_image(request.user_id, row.pk, row.source_image_path)
+        if image_path:
+            asset = ReferenceAsset.objects.create(
+                owner_id=request.user_id,
+                analysis=row,
+                title="图片提示词参考图",
+                image_path=image_path,
+                content=row.content or {},
+                rewritten_content=row.rewritten_content or "",
+            )
+            reference_asset_id = str(asset.pk)
     entries = []
     for part, category in (("layout", "layout"), ("visual_style", "style")):
         if part not in parts:
@@ -286,13 +321,29 @@ def create_prompts_from_analysis(request):
         content = str(draft.get("content") or source.get("prompt_text") or "").strip()
         if not content:
             raise ValueError("提示词内容不能为空")
-        entry = catalog.save(user, {
+        name = str(names.get(part) or ("图片布局参考" if part == "layout" else "图片风格参考"))[:50]
+        prompt_data = {
             "module": "image",
             "category": category,
-            "name": str(names.get(part) or ("图片布局参考" if part == "layout" else "图片风格参考"))[:50],
+            "name": name,
             "description": str(draft.get("description") or "由参考图片分析生成")[:500],
             "content": content,
-            "metadata": {},
-        })
+            "metadata": {"reference_asset_id": reference_asset_id} if reference_asset_id else {},
+        }
+        existing = PromptEntry.objects.filter(
+            owner_id=request.user_id,
+            module="image",
+            category=category,
+            name=name,
+        ).first()
+        if existing:
+            prompt_data.update({
+                "id": existing.pk,
+                "revision": existing.revision,
+                "enabled": existing.enabled,
+                "visibility": existing.visibility,
+                "allowed_users": existing.allowed_users,
+            })
+        entry = catalog.save(user, prompt_data)
         entries.append(entry)
     return JsonResponse({"success": True, "entries": entries})

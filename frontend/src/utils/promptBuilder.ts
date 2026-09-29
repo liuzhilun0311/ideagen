@@ -1,5 +1,5 @@
 interface PageItem {
-  type: 'cover' | 'content' | 'summary'
+  type: 'cover' | 'content' | 'summary' | 'infographic'
   content: string
 }
 interface ImageOpts {

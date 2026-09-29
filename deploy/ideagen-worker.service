@@ -1,0 +1,19 @@
+[Unit]
+Description=IdeaGen Image Postprocessing Worker
+After=network-online.target ideagen-web.service
+Requires=ideagen-web.service
+
+[Service]
+Type=simple
+User=ideagen
+Group=ideagen
+WorkingDirectory=/opt/ideagen
+EnvironmentFile=/opt/ideagen/.env
+ExecStart=/opt/ideagen/.venv/bin/python /opt/ideagen/deploy/start.py worker
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=45
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

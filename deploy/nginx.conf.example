@@ -1,0 +1,22 @@
+# Place inside Nginx http {}. Add your TLS certificate through your server panel
+# or certificate tooling before exposing authenticated traffic on the Internet.
+log_format ideagen_safe '$remote_addr $request_method $uri $status';
+server {
+    listen 80;
+    server_name ideagen.example.com;
+    client_max_body_size 32m;
+    access_log /var/log/nginx/ideagen-access.log ideagen_safe;
+
+    location / {
+        proxy_pass http://127.0.0.1:12398;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 900s;
+        proxy_send_timeout 900s;
+    }
+}

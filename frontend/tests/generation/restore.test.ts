@@ -48,7 +48,7 @@ it('returns and persists a newly created ID using the current topic and outline'
   expect(createHistory).toHaveBeenCalledOnce()
   expect(createHistory).toHaveBeenCalledWith('Topic', {
     raw: 'cover', pages: [{ index: 0, type: 'cover', content: 'cover' }],
-  })
+  }, undefined, undefined)
 })
 
 it.each([undefined, ''])('rejects success responses with invalid ID %s', async record_id => {
@@ -117,7 +117,7 @@ it.each([false, true])('preserves history hydration for complete=%s', async comp
       ],
     },
     images: { task_id: 'task', generated: complete ? ['0.png', '1.png'] : ['0.png'] },
-    content: { titles: ['Title'], copywriting: 'Copy', tags: ['tag'] },
+    content: { titles: ['Title', 'Selected'], selected_title_index: 1, copywriting: 'Copy', tags: ['tag'] },
   }
   const store = useGeneratorStore()
   store.setRecordId(record.id)
@@ -128,7 +128,10 @@ it.each([false, true])('preserves history hydration for complete=%s', async comp
   expect(store.outline).toEqual(record.outline)
   expect(store.recordId).toBe(record.id)
   expect(store.taskId).toBe('task')
-  expect(store.content).toMatchObject({ ...record.content, status: 'done' })
+  expect(store.content).toMatchObject({
+    titles: ['Title', 'Selected'], selectedTitleIndex: 1,
+    copywriting: 'Copy', tags: ['tag'], status: 'done',
+  })
   expect(store.progress).toEqual({
     current: complete ? 2 : 1, total: 2, status: complete ? 'done' : 'error',
   })

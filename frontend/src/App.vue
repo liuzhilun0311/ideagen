@@ -35,6 +35,11 @@
         </div>
       </header>
       <main id="main-content" class="layout-main" tabindex="-1">
+        <div v-if="session.referenceStorageError || session.localStorageError" class="draft-storage-error" role="alert">
+          <span>{{ session.referenceStorageError || session.localStorageError }}</span>
+          <button type="button" class="status-link" :disabled="session.referenceLoading || session.referenceSaving"
+            @click="retryLocalDraft">重试保存或恢复</button>
+        </div>
         <div v-if="session.busy || session.notice" class="creation-status" role="status" aria-live="polite">
           <span class="status-indicator" :class="{ busy: session.busy }" aria-hidden="true"></span>
           <span class="status-message">{{ session.notice || '创作任务进行中' }}</span>
@@ -52,16 +57,23 @@
 <script setup lang="ts">
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { Layers2, Menu, X, LogOut, PenLine, Images, MessageSquare, SlidersHorizontal, Users } from 'lucide-vue-next'
+import { Layers2, Menu, X, LogOut, PenLine, Images, MessageSquare, SlidersHorizontal, Users, FolderOpen } from 'lucide-vue-next'
 import { setupAutoSave, useGeneratorStore } from './stores/generator'
 import { useAuthStore } from './stores/auth'
 import { useStudioSession } from './stores/studioSession'
+import { useReferenceDraftPersistence } from './composables/useReferenceDraftPersistence'
 
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 const genStore = useGeneratorStore()
 const session = useStudioSession()
+const referenceDraft = useReferenceDraftPersistence()
+function retryLocalDraft() {
+  genStore.saveToStorage()
+  if (session.referenceStorageError) void referenceDraft.retry()
+}
+const stopAutoSave = setupAutoSave()
 const creationPath = computed(() => genStore.outline.pages.length ? session.workspacePath : '/')
 const isLoginPage = computed(() => route.path === '/login')
 const menuOpen = ref(false)
@@ -70,17 +82,19 @@ const navigation = computed(() => [
   { section: 'home', label: '创作', icon: PenLine },
   { section: 'history', label: '作品', icon: Images },
   { section: 'prompts', label: '提示词', icon: MessageSquare },
+  { section: 'reference-assets', label: '参考素材', icon: FolderOpen },
   { section: 'settings', label: '模型', icon: SlidersHorizontal },
   ...(authStore.isAdmin ? [{ section: 'users', label: '用户管理', icon: Users }] : []),
 ])
 const DEFAULT_ROUTES: Record<string, string> = {
-  home: '/', history: '/history', prompts: '/prompts', settings: '/settings', users: '/users',
+  home: '/', history: '/history', prompts: '/prompts', 'reference-assets': '/reference-assets', settings: '/settings', users: '/users',
 }
 const lastRouteBySection = reactive<Record<string, string>>({ ...DEFAULT_ROUTES })
 const isWorkflow = (path: string) => /^\/(workspace|outline|generate|result)(\/|$|\?)/.test(path)
 
 function sectionOf(path: string): string {
   if (path.startsWith('/prompts')) return 'prompts'
+  if (path.startsWith('/reference-assets')) return 'reference-assets'
   if (path.startsWith('/settings')) return 'settings'
   if (path.startsWith('/users')) return 'users'
   if (path.startsWith('/history')) return 'history'
@@ -137,7 +151,8 @@ const removeScrollRestore = router.afterEach(async (to, _from, failure) => {
   if (route.fullPath === to.fullPath) window.scrollTo({ top: scrollPositions.get(to.fullPath) || 0, behavior: 'instant' })
 })
 function guardUnload(event: BeforeUnloadEvent) {
-  if (!session.busy && !session.dirty && !(genStore.topic.trim() && !genStore.recordId)) return
+  if (!session.busy && !session.referenceSaving && !session.referenceStorageError && !session.localStorageError
+    && !session.dirty && !(genStore.topic.trim() && !genStore.recordId)) return
   event.preventDefault()
   event.returnValue = ''
 }
@@ -145,11 +160,11 @@ function handleEscape(event: KeyboardEvent) {
   if (event.key === 'Escape') closeMenu(true)
 }
 onMounted(() => {
-  setupAutoSave()
   window.addEventListener('keydown', handleEscape)
   window.addEventListener('beforeunload', guardUnload)
 })
 onUnmounted(() => {
+  stopAutoSave()
   removeGuard()
   removeScrollGuard()
   removeScrollRestore()
@@ -159,15 +174,19 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.draft-storage-error { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); z-index:90; display:flex; flex-wrap:wrap; align-items:center; gap:8px; width:max-content; max-width:calc(100vw - 32px); padding:10px 14px; border:1px solid #e9bac0; border-radius:6px; background:#fff5f5; color:#9f2534; font-size:14px; box-shadow:0 4px 16px #172b4d1a; }
 .creation-status {
+  position: fixed; top: calc(var(--header-height) + 12px); left: 50%; transform: translateX(-50%); z-index: 90;
+  width: max-content; max-width: min(640px, calc(100vw - 32px));
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
-  min-height: 48px; margin: 0 auto 16px; padding: 4px 12px;
+  min-height: 48px; margin: 0; padding: 4px 12px;
   border: 1px solid #d8e2ff; border-left: 3px solid var(--primary);
+  border-radius: 6px; box-shadow: 0 4px 16px #172b4d1a;
   background: #f5f7ff; color: var(--text-main); font-size: 14px;
 }
 .status-indicator { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--success); }
 .status-indicator.busy { background: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
-.status-message { min-width: 0; }
+.status-message { min-width: 0; overflow-wrap: anywhere; flex: 1; }
 .creation-status>.icon-button { margin-left: auto; }
 .status-link { min-height: 44px; padding: 8px 4px; background: none; border: 0; color: var(--primary); font: inherit; text-decoration: underline; cursor: pointer; }
 .studio-header {
@@ -217,7 +236,7 @@ onUnmounted(() => {
   .header-user { margin-left: 0; padding-top: 12px; border-top: 1px solid var(--border-color); }
   .user-name { display: block; max-width: none; flex: 1; }
   .logout-btn { margin-left: auto; }
-  .creation-status { margin-bottom: 12px; padding-inline: 10px; }
+  .creation-status { padding-inline: 10px; }
   .status-message { flex: 1 1 180px; }
 }
 </style>

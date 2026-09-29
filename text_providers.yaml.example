@@ -1,0 +1,18 @@
+# 文本生成服务商配置【模板】
+# 使用方法：
+#   1. cp text_providers.yaml.example text_providers.yaml
+#   2. 编辑 text_providers.yaml，把下面的占位内容替换为真实服务商与 API Key
+# 注意：text_providers.yaml 含敏感密钥，已被 .gitignore / .dockerignore 排除，不会提交或打进镜像
+active_provider: DeepSeek示例
+providers:
+  DeepSeek示例:
+    allowed_users:
+    - admin
+    api_key: 在此填入你的API_KEY
+    base_url: https://api.deepseek.com
+    display_name: DeepSeek:deepseek-chat
+    enabled: true
+    endpoint_type: chat/completions
+    model: deepseek-chat
+    remark: ''
+    type: openai_compatible

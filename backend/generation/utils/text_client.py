@@ -6,6 +6,7 @@ import requests
 from functools import wraps
 from typing import List, Optional, Union
 from .image_compressor import compress_image
+from ..diagnostics import upstream_post
 
 
 def retry_on_429(max_retries=3, base_delay=2):
@@ -156,8 +157,9 @@ class TextChatClient:
             "Authorization": f"Bearer {self.api_key}"
         }
 
-        response = requests.post(
-            self.chat_endpoint,
+        response = upstream_post(
+            requests.post, self.chat_endpoint,
+            diagnostic_secret=self.api_key,
             json=payload,
             headers=headers,
             timeout=300  # 5分钟超时
@@ -283,4 +285,8 @@ def get_text_chat_client(provider_config: dict):
         from .genai_client import GenAIClient
         return GenAIClient(api_key=api_key, base_url=base_url)
     else:
+        from .text_protocol import resolve_text_protocol
+        if resolve_text_protocol(provider_config) == 'responses':
+            from .responses_client import ResponsesTextClient
+            return ResponsesTextClient(api_key=api_key, base_url=base_url, endpoint_type=endpoint_type)
         return TextChatClient(api_key=api_key, base_url=base_url, endpoint_type=endpoint_type)

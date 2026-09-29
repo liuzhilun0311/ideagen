@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { nextTick, ref } from 'vue'
 
@@ -50,10 +50,43 @@ function deferred<T>() {
 const content: ContentResponse = {
   success: true, titles: ['New title'], copywriting: 'New copy', tags: ['new'],
 }
+
+it('retains the copy diagnostic record without an image task', async () => {
+  vi.mocked(generateContent).mockResolvedValue({ ...content,
+    generation_record: { id: 'copy-run', status: 'succeeded' } })
+  await studio.run('content')
+  expect(studio.store.content.diagnostic_record_id).toBe('copy-run')
+})
+
+it('shows missing-symbol warnings while preserving the generated copy without retrying', async () => {
+  const warning = '已选择“丰富”，但正文未包含表情或信息符号。'
+  vi.mocked(generateContent).mockResolvedValue({
+    ...content, validation: {
+      body_characters: 8, warnings: [warning], semantic_verified: false, facts_verified: false,
+    },
+  })
+  await studio.run('content')
+  expect(studio.store.content.copywriting).toBe(content.copywriting)
+  expect(useStudioSession().notice).toContain(warning)
+  expect(generateContent).toHaveBeenCalledOnce()
+})
+
+it('retains a failed copy diagnostic record without replacing existing copy', async () => {
+  studio.store.content.copywriting = 'Keep me'
+  vi.mocked(generateContent).mockRejectedValue({
+    isAxiosError: true, response: { data: { generation_record: { id: 'failed-copy' }, error_message: 'Failed' } },
+  })
+  await studio.run('content')
+  expect(studio.store.content.diagnostic_record_id).toBe('failed-copy')
+  expect(studio.store.content.copywriting).toBe('Keep me')
+})
 let studio: ReturnType<typeof useStudio>
+
+afterEach(() => vi.unstubAllGlobals())
 
 beforeEach(async () => {
   vi.resetAllMocks()
+  vi.stubGlobal('window', { confirm: vi.fn(() => true) })
   setActivePinia(createPinia())
   vi.mocked(getConfig).mockResolvedValue({
     success: true,
@@ -93,6 +126,40 @@ beforeEach(async () => {
 })
 
 describe('studio generation', () => {
+  it('uses current pages for both generation paths and saves the copy source snapshot', async () => {
+    studio.store.outline.raw = 'Obsolete raw text'
+    studio.store.outline.pages[0]!.content = 'Current page text'
+    await studio.run('content')
+    expect(generateContent).toHaveBeenCalledWith('City walk', 'Current page text', '', expect.any(AbortSignal), 'text', undefined,
+      { style: '自动', structure: '自动', length: '适中', emoji_level: '克制' })
+    expect(studio.store.content.source).toEqual({ topic: 'City walk', outline: 'Current page text' })
+    await studio.save()
+    expect(updateHistory).toHaveBeenLastCalledWith('record', expect.objectContaining({
+      content: expect.objectContaining({ source: { topic: 'City walk', outline: 'Current page text' } }),
+    }))
+    await studio.run('images')
+    expect(actions.imageStart).toHaveBeenCalledWith(true, expect.objectContaining({ raw: 'Current page text' }))
+  })
+
+  it('preserves publishing copy and its source when regenerating the outline', async () => {
+    studio.store.content.source = { topic: 'City walk', outline: 'Cover' }
+    actions.outlineStart.mockImplementation(async () => {
+      studio.store.setOutline('New structure', [{ index: 0, type: 'cover', content: 'New structure' }])
+      return true
+    })
+    await studio.run('outline')
+    expect(studio.store.outline.raw).toBe('New structure')
+    expect(studio.store.content.copywriting).toBe('Saved copy')
+    expect(studio.store.content.source?.outline).toBe('Cover')
+  })
+
+  it('does not overwrite manually edited copy when regeneration confirmation is cancelled', async () => {
+    vi.mocked(window.confirm).mockReturnValue(false)
+    await studio.run('content')
+    expect(generateContent).not.toHaveBeenCalled()
+    expect(studio.store.content.copywriting).toBe('Saved copy')
+  })
+
   it('keeps shared task ownership until background content finishes', async () => {
     const generated = deferred<ContentResponse>()
     vi.mocked(generateContent).mockReturnValue(generated.promise)
@@ -181,7 +248,8 @@ describe('studio generation', () => {
     await pending
     if (kind === 'images') expect(actions.imageStart).toHaveBeenCalledWith(true, expect.objectContaining({ imageModelName: 'image' }))
     else {
-      expect(generateContent).toHaveBeenCalledWith('City walk', 'Cover', '', expect.any(AbortSignal), 'text')
+      expect(generateContent).toHaveBeenCalledWith('City walk', 'Cover', '', expect.any(AbortSignal), 'text', undefined,
+        { style: '自动', structure: '自动', length: '适中', emoji_level: '克制' })
       expect(studio.store.content).toMatchObject({
         titles: content.titles, copywriting: content.copywriting, tags: content.tags, status: 'done',
       })
@@ -287,14 +355,14 @@ describe('studio generation', () => {
 
 describe('creation display details', () => {
   it('prefers display_name for text and image model labels without changing provider IDs', () => {
-    expect(studio.options.textModels.value[0]).toEqual({ name: 'text', label: 'Editorial writer' })
-    expect(studio.options.imageModels.value[0]).toEqual({ name: 'image', label: 'Photo studio' })
+    expect(studio.options.textModels.value[0]).toMatchObject({ name: 'text', label: 'Editorial writer', model: 'internal-text-model' })
+    expect(studio.options.imageModels.value[0]).toMatchObject({ name: 'image', label: 'Photo studio' })
     expect(studio.store.outlineModelName).toBe('text')
     expect(studio.store.imageModelName).toBe('image')
   })
 
   it('retains model and provider-name fallbacks when display_name is absent', () => {
-    expect(studio.options.textModels.value.slice(1)).toEqual([
+    expect(studio.options.textModels.value.slice(1)).toMatchObject([
       { name: 'fallback', label: 'fallback · Fallback model' },
       { name: 'plain', label: 'plain' },
     ])

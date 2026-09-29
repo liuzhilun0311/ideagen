@@ -16,37 +16,120 @@ import base64
 import json
 import logging
 import os
+import re
+import mimetypes
 
-from django.conf import settings
 from django.http import FileResponse, JsonResponse, StreamingHttpResponse
 
 from common.api import (api_error_response, json_body, log_request,
                         normalize_error_result, require_auth, validation_error)
 from common.errors import ensure_app_error
 from prompts.services import resolve_prompt_text
+from prompts.catalog_runtime import base as catalog_base, snapshot as catalog_snapshot
+from .catalog import catalog_request
 
 from .services.content import get_content_service
 from .services.image import ImageService, get_image_service
+from .styles import request_style, style_prompt, validate_image_pages
+from .diagnostics import read as read_diagnostics, capture, record as record_diagnostic, sanitize
+from .consistency import check_content_image_consistency
+from .parameters import apply_image_parameters
 from .services.task_cancel import cancel_user
 from .services.outline import get_outline_service
 from history.services import get_history_service
+from history.models import HistoryRecord
+from history.permissions import actor, can_modify, can_read, private_view, source_file, task_records
+from .outline_prompt import preferences, build_outline_prompt, expression_instruction
+from .generation_context import audit_context, build_generation_context
+from .models import OutlineRun
+from .models import ContentRun
+from .content_diagnostics import finish as finish_content_run
+from .outline_inspection import reference_summaries, serialize as serialize_outline_run
+from .reference_roles import reference_instruction
+from .styles import FrozenImageTemplate
+from .reference_images import (
+    MAX_REFERENCE_IMAGE_BYTES, MAX_REFERENCE_DATA_URL_LENGTH, REFERENCE_IMAGE_TYPES,
+    validate_reference_count, validate_reference_image,
+)
 
 logger = logging.getLogger(__name__)
 
 _JSON_PARAMS = {"ensure_ascii": False}
 
+def _reference_template(template, data, record_id=None):
+    record = HistoryRecord.objects.filter(pk=record_id).first() if record_id else None
+    saved = (record.outline or {}).get("creation_inputs") or {} if record else {}
+    references = data.get("user_images")
+    if references is None:
+        references = [item["data"] for item in saved.get("reference_images", [])]
+    roles = data.get("reference_roles")
+    if roles is None:
+        roles = saved.get("reference_roles", [])
+    from .palettes import image_reference_roles
+    context = getattr(template, "generation_context", None) or {}
+    style = (context.get("visual") or {}).get("image_style") or data.get("image_style") or {}
+    roles = image_reference_roles(style, roles)
+    return FrozenImageTemplate(
+        str(template).replace("参考图只保留必要的主体关系，按最终风格重新绘制。",
+                              "参考图仅按用户选定维度使用。") + reference_instruction(len(references), roles),
+        generation_context=getattr(template, "generation_context", None),
+    )
+
+def _image_generation_context(data, topic, outline, image_style, record_id=None, page=None):
+    generation_preferences = data.get("generation_preferences") or {}
+    if not generation_preferences and record_id:
+        record = HistoryRecord.objects.filter(pk=record_id).first()
+        stored_outline = record.outline if record else {}
+        if isinstance(stored_outline, dict):
+            generation_preferences = stored_outline.get("generation_preferences") or {}
+    return build_generation_context(
+        topic,
+        outline,
+        generation_preferences,
+        data.get("copy_preferences") or {},
+        image_style,
+        page=page,
+    )
+
 
 # ==================== 大纲生成 ====================
 
 @require_auth
+@catalog_request
 def generate_outline(request):
     """POST /api/outline 生成大纲（支持图片上传）"""
+    run = None
     try:
         # 解析请求数据
         topic, reference_content, images = _parse_outline_request(request)
+        raw_roles = request.POST.get('reference_roles', '[]') if request.content_type and 'multipart' in request.content_type else (json_body(request).get('reference_roles', []))
+        try:
+            reference_roles = json.loads(raw_roles) if isinstance(raw_roles, str) else raw_roles
+        except (TypeError, ValueError):
+            raise ValueError("参考内容选项格式无效，请重新选择。") from None
         prompt_name = _outline_prompt_name(request)
         provider_name = _outline_provider_name(request) or None
-        prompt_text = resolve_prompt_text(request.user_id, 'outline', prompt_name)
+        data = request.POST if request.content_type and 'multipart/form-data' in request.content_type else json_body(request)
+        options = preferences(data)
+        options_for_storage = {key: value for key, value in options.items() if not key.startswith("_")}
+        prompt_text = build_outline_prompt(topic, reference_content, len(images or []), options, reference_roles=reference_roles)
+        run = OutlineRun.objects.create(user_id=request.user_id, prompt=prompt_text,
+            preferences={**options_for_storage, "reference_roles": reference_roles, "catalog_snapshot": catalog_snapshot()},
+            references=reference_summaries(images or []), provider=provider_name or "")
+        diagnostic_id = f"outline-{run.pk}"
+        record_diagnostic(diagnostic_id, sanitize({
+            "event": "request", "source": "local", "phase": "outline",
+            "prompt": prompt_text, "provider": provider_name or "active",
+            "parameters": options,
+            "references": [{"bytes": len(image)} for image in images or []],
+        }))
+
+        def on_send(prompt, model):
+            run.prompt = prompt
+            run.model = model
+            run.sent = True
+            run.status = "generating"
+            run.save(update_fields=["prompt", "model", "sent", "status"])
 
         log_request('/outline', {
             'topic': topic,
@@ -65,14 +148,74 @@ def generate_outline(request):
 
         # 调用大纲生成服务
         logger.info(f"🔄 开始生成大纲，主题: {topic[:50]}...")
-        outline_service = get_outline_service(request.user_id)
-        result = outline_service.generate_outline(
-            topic,
-            images if images else None,
-            prompt_text=prompt_text,
-            reference_content=reference_content,
-            provider_name=provider_name,
-        )
+        with capture(diagnostic_id, 0):
+            outline_service = get_outline_service(request.user_id)
+            result = outline_service.generate_outline(
+                topic,
+                images if images else None,
+                prepared_prompt=prompt_text,
+                options=options,
+                on_send=on_send,
+                reference_content=reference_content,
+                provider_name=provider_name,
+                organization=options["organization"],
+            )
+        run.status = "succeeded" if result.get("success") else "cancelled" if result.get("cancelled") else "failed"
+        run.save(update_fields=["status"])
+        record_diagnostic(diagnostic_id, sanitize({
+            "event": "response", "source": "local", "phase": "outline",
+            "status": run.status, "model": run.model,
+            "error": result.get("error"), "page_count": len(result.get("pages", [])),
+        }))
+        result["generation_record"] = serialize_outline_run(run)
+        from .generation_context import effective_preferences
+        effective = effective_preferences(options, result.get("growth_recommendation"))
+        if result.get("success"):
+            from .recommendations import (
+                resolve_adopted_audience, resolve_adopted_tone,
+                resolve_adopted_outline_modes,
+            )
+            effective = resolve_adopted_audience(effective, result.get("generation_recommendation"))
+            effective = resolve_adopted_tone(effective, result.get("generation_recommendation"))
+            effective = resolve_adopted_outline_modes(effective, result.get("generation_recommendation"))
+            if effective.get("content_form") == "single_infographic" and effective.get("page_count") == "auto":
+                effective["page_count"] = 1
+        if result.get("success") and options.get("organization") == "自动":
+            from prompts.catalog_runtime import option
+            try:
+                selected = option("outline", "organization", result.get("organization", "自动"))
+                effective["organization"] = selected.get("legacy_value") or selected["id"]
+            except ValueError:
+                effective["organization"] = "自动"
+        effective = {key: value for key, value in effective.items() if not key.startswith("_")}
+        result["requested_preferences"] = options_for_storage
+        result["generation_preferences"] = effective
+        if result.get("success"):
+            from .recommendations import attach_outline_explanation
+            attach_outline_explanation(result, options)
+        outline_context = build_generation_context(topic, result.get("outline", ""), options, {}, {})
+        result["generation_audit"] = {
+            "context": outline_context,
+            "effective": {
+                "platform": effective.get("platform", "auto"),
+                "goal": effective.get("goal", "auto"),
+                "content_form": effective.get("content_form", "auto"),
+                "information_density": effective.get("information_density", "auto"),
+                "auto_recommended": options.get("platform", "auto") == "auto"
+                    or options.get("goal", "auto") == "auto"
+                    or options.get("content_form", "auto") == "auto"
+                    or options.get("information_density", "auto") == "auto",
+            },
+            "prompts": [{
+                "phase": "outline",
+                "prompt_name": prompt_name or "outline",
+                "used_fields": [item["field"] for item in audit_context(outline_context)
+                                if item["phase"] == "outline" and item["applied"]],
+                "rules": [outline_context["prompt_rules"]["outline"]],
+                "verification": "prompt_compiled",
+                "output_verified": False,
+            }],
+        }
 
         # 记录结果
         if result["success"]:
@@ -89,8 +232,26 @@ def generate_outline(request):
                                 json_dumps_params=_JSON_PARAMS)
 
     except Exception as e:
-        logger.error(f"大纲生成异常: {e}")
-        return api_error_response(e, context={"endpoint": "/api/outline"})
+        safe_error = sanitize(str(e))
+        if run:
+            run.status = "failed"
+            run.save(update_fields=["status"])
+            record_diagnostic(f"outline-{run.pk}", {
+                "event": "response", "source": "local", "phase": "outline",
+                "status": "failed", "error": safe_error,
+            })
+            result = normalize_error_result({
+                "success": False, "error": safe_error,
+                "generation_record": serialize_outline_run(run),
+            }, context={"endpoint": "/api/outline"})
+            return JsonResponse(result, status=result["error"]["status"], json_dumps_params=_JSON_PARAMS)
+        logger.error(f"大纲生成异常: {safe_error}")
+        if isinstance(e, (ValueError, TypeError)):
+            return api_error_response(
+                validation_error("大纲输入无效", safe_error),
+                context={"endpoint": "/api/outline"},
+            )
+        return api_error_response(safe_error, context={"endpoint": "/api/outline"})
 
 
 def _parse_outline_request(request):
@@ -113,9 +274,13 @@ def _parse_outline_request(request):
         # 获取上传的图片文件
         if 'images' in request.FILES:
             files = request.FILES.getlist('images')
+            validate_reference_count(len(files))
             for file in files:
                 if file and file.name:
-                    image_data = file.read()
+                    if file.size > MAX_REFERENCE_IMAGE_BYTES:
+                        raise ValueError("参考图片每张不超过5 MiB。")
+                    image_data = file.read(MAX_REFERENCE_IMAGE_BYTES + 1)
+                    validate_reference_image(image_data, file.content_type)
                     images.append(image_data)
 
         return topic, reference_content, images
@@ -128,12 +293,25 @@ def _parse_outline_request(request):
 
     # 支持 base64 格式的图片
     images_base64 = data.get('images', [])
+    if not isinstance(images_base64, list):
+        raise ValueError("参考图片格式无效。")
+    validate_reference_count(len(images_base64))
     if images_base64:
         for img_b64 in images_base64:
-            # 移除可能的 data URL 前缀
+            if not isinstance(img_b64, str) or len(img_b64) > MAX_REFERENCE_DATA_URL_LENGTH:
+                raise ValueError("参考图片每张不超过5 MiB。")
+            expected_type = None
             if ',' in img_b64:
-                img_b64 = img_b64.split(',')[1]
-            images.append(base64.b64decode(img_b64))
+                header, img_b64 = img_b64.split(',', 1)
+                if header not in tuple(f"data:{mime};base64" for mime in REFERENCE_IMAGE_TYPES):
+                    raise ValueError("参考图片格式无效，仅支持 JPEG、PNG 或 WebP。")
+                expected_type = header[5:-7]
+            try:
+                binary = base64.b64decode(img_b64, validate=True)
+            except ValueError:
+                raise ValueError("参考图片编码无效。") from None
+            validate_reference_image(binary, expected_type)
+            images.append(binary)
 
     return topic, reference_content, images
 
@@ -157,15 +335,21 @@ def _outline_provider_name(request) -> str:
 # ==================== 内容生成 ====================
 
 @require_auth
+@catalog_request
 def generate_content(request):
     """POST /api/content 生成标题、文案、标签"""
+    run = None
     try:
         data = json_body(request)
         topic = data.get('topic', '')
         outline = data.get('outline', '')
         prompt_name = data.get('prompt_name') or ''
         provider_name = (data.get('provider_name') or '').strip() or None
-        prompt_text = resolve_prompt_text(request.user_id, 'content', prompt_name)
+        from .copy_prompt import build_copy_prompt
+        try:
+            prompt_text, copy_options, _ = build_copy_prompt(data)
+        except (ValueError, TypeError, AttributeError) as error:
+            return api_error_response(str(error), status=400)
 
         log_request('/content', {
             'topic': topic[:50] if topic else '',
@@ -191,13 +375,30 @@ def generate_content(request):
 
         # 调用内容生成服务
         logger.info(f"🔄 开始生成内容，主题: {topic[:50]}...")
-        content_service = get_content_service(request.user_id)
-        result = content_service.generate_content(topic, outline, prompt_text=prompt_text, provider_name=provider_name)
+        run = ContentRun.objects.create(user_id=request.user_id, prompt=prompt_text,
+            provider=provider_name or "", preferences={
+                "copy": copy_options, "generation": data.get("generation_preferences"),
+                "catalog_snapshot": catalog_snapshot(),
+            })
+        diagnostic_id = f"content-{run.pk}"
+        record_diagnostic(diagnostic_id, {
+            "event": "request", "source": "local", "phase": "content",
+            "prompt": prompt_text, "provider": provider_name or "active", "parameters": run.preferences,
+        })
+        with capture(diagnostic_id, 0):
+            content_service = get_content_service(request.user_id)
+            result = content_service.generate_content(topic, outline, prepared_prompt=prompt_text, provider_name=provider_name)
+        if result.get("success"):
+            from .copy_validation import validate_copy_result
+            try:
+                result["validation"] = validate_copy_result(result, copy_options)
+            except ValueError as error:
+                return finish_content_run(run, api_error_response(str(error), status=422))
 
         # 记录结果
         if result["success"]:
             logger.info(f"✅ 内容生成成功")
-            return JsonResponse(result, status=200, json_dumps_params=_JSON_PARAMS)
+            return finish_content_run(run, JsonResponse(result, status=200, json_dumps_params=_JSON_PARAMS))
         else:
             logger.error(f"❌ 内容生成失败: {result.get('error', '未知错误')}")
             result = normalize_error_result(
@@ -205,12 +406,12 @@ def generate_content(request):
                 context={"endpoint": "/api/content"},
                 fallback_status=500,
             )
-            return JsonResponse(result, status=result["error"].get("status", 500),
-                                json_dumps_params=_JSON_PARAMS)
+            return finish_content_run(run, JsonResponse(result, status=result["error"].get("status", 500),
+                                json_dumps_params=_JSON_PARAMS))
 
     except Exception as e:
         logger.error(f"内容生成异常: {e}")
-        return api_error_response(e, context={"endpoint": "/api/content"})
+        return finish_content_run(run, api_error_response(e, context={"endpoint": "/api/content"}))
 
 
 # ==================== 图片生成 ====================
@@ -231,16 +432,23 @@ def cancel_generation(request):
 
 
 @require_auth
+@catalog_request
 def generate_images(request):
     """POST /api/generate 批量生成图片（SSE 流式返回）"""
     try:
         data = json_body(request)
         pages = data.get('pages')
+        use_reference = data.get('use_reference', True)
         task_id = data.get('task_id')
         record_id = data.get('record_id')
+        use_reference = data.get('use_reference', True)
+        denied = _generation_denied(request, task_id, record_id)
+        if denied is not None:
+            return denied
         force = bool(data.get('force', False))
         full_outline = data.get('full_outline', '')
         user_topic = data.get('user_topic', '')
+        use_reference = data.get('use_reference', True)
 
         # 解析 base64 格式的用户参考图片
         user_images = _parse_base64_images(data.get('user_images', []))
@@ -263,12 +471,31 @@ def generate_images(request):
 
         logger.info(f"🖼️  开始图片生成任务: {task_id}, 共 {len(pages)} 页")
         # 在请求上下文内先取出用户 ID，SSE 生成器惰性执行时 request 已不可用
-        user_id = request.user_id
+        user_id = _task_owner_user_id(task_id, record_id, request.user_id)
         image_prompt_name = data.get('image_prompt_name') or ''
         image_provider_name = (data.get('provider_name') or '').strip() or None
-        image_prompt_text = resolve_prompt_text(user_id, 'image', image_prompt_name)
+        image_prompt_text = catalog_base('image')
+        try:
+            selected_style = request_style(data, record_id, task_id)
+            context = _image_generation_context(
+                data,
+                user_topic,
+                full_outline,
+                selected_style,
+                record_id=record_id,
+            )
+            image_prompt_text = style_prompt(
+                image_prompt_text,
+                selected_style,
+                generation_context=context,
+            )
+            validate_image_pages(image_prompt_text, pages)
+            image_prompt_text = _reference_template(image_prompt_text, data, record_id)
+        except ValueError as error:
+            return api_error_response(str(error), status=400)
         # 用户选择模型（服务商）时按指定服务商创建实例，否则使用当前激活服务商
         image_service = ImageService(image_provider_name, user_id) if image_provider_name else get_image_service(user_id)
+        image_service = apply_image_parameters(image_service, data.get('image_parameters'))
 
         def generate():
             """SSE 事件生成器"""
@@ -280,8 +507,15 @@ def generate_images(request):
                 force=force,
                 user_id=user_id,
                 image_prompt_text=image_prompt_text,
+                use_reference=use_reference,
             ):
                 event_type = event["event"]
+                if event_type == 'complete' and record_id:
+                    choice = {key: selected_style[key] for key in ('preset', 'notes', 'palette') if key in selected_style}
+                    record = HistoryRecord.objects.filter(pk=record_id).first()
+                    if record:
+                        HistoryRecord.objects.filter(pk=record_id).update(
+                            image_style={**(record.image_style or {}), 'applied': choice})
                 event_data = _normalize_sse_error(
                     event_type,
                     event["data"],
@@ -308,6 +542,7 @@ def generate_images(request):
 
 # ==================== 图片获取 ====================
 
+@private_view
 @require_auth
 def get_image(request, task_id, filename):
     """GET /api/images/<task_id>/<filename> 获取图片文件"""
@@ -317,33 +552,26 @@ def get_image(request, task_id, filename):
         # 检查是否请求缩略图
         thumbnail = request.GET.get('thumbnail', 'true').lower() == 'true'
 
-        # 构建 history 目录路径
-        history_root = settings.HISTORY_ROOT
-
         # 归属校验：任务属于当前用户或管理员
-        owner_id = _find_task_owner(task_id)
-        user = getattr(request, 'user_obj', None)
-        is_admin = bool(user and user.get('is_admin'))
-        if not (is_admin or (user and owner_id and user['id'] == owner_id)):
+        user = actor(request.user_id)
+        record = next((record for record in task_records(task_id)
+                       if can_read(user, record) and source_file(record, filename)), None)
+        if record is None:
             return api_error_response(
                 "无权访问该图片",
                 status=403,
                 context={"endpoint": "/api/images", "task_id": task_id, "filename": filename},
             )
 
-        task_dir = os.path.join(str(history_root), owner_id or 'default', task_id)
+        filepath = source_file(record, filename)
 
         if thumbnail:
             # 尝试返回缩略图
-            thumb_filename = f"thumb_{filename}"
-            thumb_filepath = os.path.join(task_dir, thumb_filename)
-
-            if os.path.exists(thumb_filepath):
-                return FileResponse(open(thumb_filepath, 'rb'), content_type='image/png')
+            thumb_filepath = filepath.with_name(f"thumb_{filename}")
+            if thumb_filepath.resolve() == thumb_filepath and thumb_filepath.is_file():
+                return FileResponse(open(thumb_filepath, 'rb'), content_type=mimetypes.guess_type(str(thumb_filepath))[0] or 'image/png')
 
         # 返回原图
-        filepath = os.path.join(task_dir, filename)
-
         if not os.path.exists(filepath):
             return api_error_response(
                 "图片不存在",
@@ -351,7 +579,7 @@ def get_image(request, task_id, filename):
                 context={"endpoint": "/api/images", "task_id": task_id, "filename": filename},
             )
 
-        return FileResponse(open(filepath, 'rb'), content_type='image/png')
+        return FileResponse(open(filepath, 'rb'), content_type=mimetypes.guess_type(str(filepath))[0] or 'image/png')
 
     except Exception as e:
         logger.error(f"获取图片异常: {e}")
@@ -361,6 +589,7 @@ def get_image(request, task_id, filename):
 # ==================== 重试和重新生成 ====================
 
 @require_auth
+@catalog_request
 def retry_single_image(request):
     """POST /api/retry 重试生成单张失败的图片"""
     try:
@@ -369,6 +598,9 @@ def retry_single_image(request):
         page = data.get('page')
         use_reference = data.get('use_reference', True)
         record_id = data.get('record_id')
+        denied = _generation_denied(request, task_id, record_id)
+        if denied is not None:
+            return denied
 
         log_request('/retry', {
             'task_id': task_id,
@@ -388,9 +620,29 @@ def retry_single_image(request):
         owner_user_id = _task_owner_user_id(task_id, record_id, request.user_id)
         image_prompt_name = data.get('image_prompt_name') or ''
         image_provider_name = (data.get('provider_name') or '').strip() or None
-        image_prompt_text = resolve_prompt_text(owner_user_id, 'image', image_prompt_name)
+        image_prompt_text = catalog_base('image')
+        try:
+            selected_style = request_style(data, record_id, task_id)
+            context = _image_generation_context(
+                data,
+                data.get("user_topic", ""),
+                data.get("full_outline", ""),
+                selected_style,
+                record_id=record_id,
+                page=page,
+            )
+            image_prompt_text = style_prompt(
+                image_prompt_text,
+                selected_style,
+                generation_context=context,
+            )
+            validate_image_pages(image_prompt_text, [page])
+            image_prompt_text = _reference_template(image_prompt_text, data, record_id)
+        except ValueError as error:
+            return api_error_response(str(error), status=400)
         # 用户选择模型（服务商）时按指定服务商创建实例，否则使用当前激活服务商
         image_service = ImageService(image_provider_name, owner_user_id) if image_provider_name else get_image_service(owner_user_id)
+        image_service = apply_image_parameters(image_service, data.get('image_parameters'))
         result = image_service.retry_single_image(
             task_id,
             page,
@@ -419,6 +671,7 @@ def retry_single_image(request):
 
 
 @require_auth
+@catalog_request
 def retry_failed_images(request):
     """POST /api/retry-failed 批量重试失败的图片（SSE 流式返回）"""
     try:
@@ -426,6 +679,10 @@ def retry_failed_images(request):
         task_id = data.get('task_id')
         pages = data.get('pages')
         record_id = data.get('record_id')
+        use_reference = data.get('use_reference', True)
+        denied = _generation_denied(request, task_id, record_id)
+        if denied is not None:
+            return denied
 
         log_request('/retry-failed', {
             'task_id': task_id,
@@ -445,15 +702,36 @@ def retry_failed_images(request):
         owner_user_id = _task_owner_user_id(task_id, record_id, request.user_id)
         image_prompt_name = data.get('image_prompt_name') or ''
         image_provider_name = (data.get('provider_name') or '').strip() or None
-        image_prompt_text = resolve_prompt_text(owner_user_id, 'image', image_prompt_name)
+        image_prompt_text = catalog_base('image')
+        try:
+            selected_style = request_style(data, record_id, task_id)
+            context = _image_generation_context(
+                data,
+                data.get("user_topic", ""),
+                data.get("full_outline", ""),
+                selected_style,
+                record_id=record_id,
+            )
+            image_prompt_text = style_prompt(
+                image_prompt_text,
+                selected_style,
+                generation_context=context,
+            )
+            validate_image_pages(image_prompt_text, pages)
+            image_prompt_text = _reference_template(image_prompt_text, data, record_id)
+        except ValueError as error:
+            return api_error_response(str(error), status=400)
         # 用户选择模型（服务商）时按指定服务商创建实例，否则使用当前激活服务商
         image_service = ImageService(image_provider_name, owner_user_id) if image_provider_name else get_image_service(owner_user_id)
+
+        image_service = apply_image_parameters(image_service, data.get('image_parameters'))
 
         def generate():
             """SSE 事件生成器"""
             for event in image_service.retry_failed_images(
                 task_id, pages, record_id=record_id, user_id=owner_user_id,
                 image_prompt_text=image_prompt_text,
+                use_reference=use_reference,
             ):
                 event_type = event["event"]
                 event_data = _normalize_sse_error(
@@ -480,6 +758,7 @@ def retry_failed_images(request):
 
 
 @require_auth
+@catalog_request
 def regenerate_image(request):
     """POST /api/regenerate 重新生成图片（即使成功的也可以重新生成）"""
     try:
@@ -490,6 +769,9 @@ def regenerate_image(request):
         full_outline = data.get('full_outline', '')
         user_topic = data.get('user_topic', '')
         record_id = data.get('record_id')
+        denied = _generation_denied(request, task_id, record_id)
+        if denied is not None:
+            return denied
 
         log_request('/regenerate', {
             'task_id': task_id,
@@ -509,9 +791,29 @@ def regenerate_image(request):
         owner_user_id = _task_owner_user_id(task_id, record_id, request.user_id)
         image_prompt_name = data.get('image_prompt_name') or ''
         image_provider_name = (data.get('provider_name') or '').strip() or None
-        image_prompt_text = resolve_prompt_text(owner_user_id, 'image', image_prompt_name)
+        image_prompt_text = catalog_base('image')
+        try:
+            selected_style = request_style(data, record_id, task_id)
+            context = _image_generation_context(
+                data,
+                data.get("user_topic", ""),
+                data.get("full_outline", ""),
+                selected_style,
+                record_id=record_id,
+                page=page,
+            )
+            image_prompt_text = style_prompt(
+                image_prompt_text,
+                selected_style,
+                generation_context=context,
+            )
+            validate_image_pages(image_prompt_text, [page])
+            image_prompt_text = _reference_template(image_prompt_text, data, record_id)
+        except ValueError as error:
+            return api_error_response(str(error), status=400)
         # 用户选择模型（服务商）时按指定服务商创建实例，否则使用当前激活服务商
         image_service = ImageService(image_provider_name, owner_user_id) if image_provider_name else get_image_service(owner_user_id)
+        image_service = apply_image_parameters(image_service, data.get('image_parameters'))
         result = image_service.regenerate_image(
             task_id, page, use_reference,
             full_outline=full_outline,
@@ -519,6 +821,7 @@ def regenerate_image(request):
             record_id=record_id,
             user_id=owner_user_id,
             image_prompt_text=image_prompt_text,
+            user_images=_parse_base64_images(data["user_images"]) if "user_images" in data else None,
         )
 
         if result["success"]:
@@ -541,10 +844,14 @@ def regenerate_image(request):
 
 # ==================== 任务状态 ====================
 
+@private_view
 @require_auth
 def get_task_state(request, task_id):
     """GET /api/task/<task_id> 获取任务状态"""
     try:
+        denied = _generation_denied(request, task_id)
+        if denied is not None:
+            return denied
         image_service = get_image_service(request.user_id)
         state = image_service.get_task_state(task_id)
 
@@ -572,6 +879,61 @@ def get_task_state(request, task_id):
         return api_error_response(e, context={"endpoint": "/api/task", "task_id": task_id})
 
 
+@require_auth
+def get_diagnostics(request, task_id):
+    denied = _generation_denied(request, task_id)
+    if denied is not None:
+        return denied
+    page_index = request.GET.get("page_index")
+    generation_id = request.GET.get("generation_id")
+    events = read_diagnostics(task_id)
+    if page_index is not None:
+        try:
+            events = [event for event in events if event.get("page_index") == int(page_index)]
+        except ValueError:
+            return api_error_response("页面索引无效。", status=400)
+    if generation_id:
+        events = [event for event in events if event.get("generation_id") == generation_id]
+    return JsonResponse({"success": True, "task_id": task_id, "events": events},
+                        json_dumps_params={"ensure_ascii": False})
+
+
+@private_view
+@require_auth
+def get_consistency(request, task_id):
+    """GET /api/generation/consistency/<task_id>."""
+    denied = _generation_denied(request, task_id)
+    if denied is not None:
+        return denied
+    user = actor(request.user_id)
+    record = next(
+        (item for item in task_records(task_id) if can_read(user, item)),
+        None,
+    )
+    if record is None:
+        return api_error_response("无权访问该任务。", status=403,
+                                  context={"endpoint": "/api/generation/consistency",
+                                           "task_id": task_id})
+    outline = record.outline or {}
+    pages = outline.get("pages", []) if isinstance(outline, dict) else []
+    images = []
+    for event in read_diagnostics(task_id):
+        if event.get("event") != "request" or not event.get("prompt"):
+            continue
+        images.append({
+            "index": event.get("page_index"),
+            "prompt": event.get("prompt"),
+        })
+    result = check_content_image_consistency(
+        record.title,
+        pages,
+        images,
+        outline.get("generation_preferences", {}) if isinstance(outline, dict) else {},
+    )
+    return JsonResponse({"success": True, "task_id": task_id, "result": result},
+                        json_dumps_params={"ensure_ascii": False})
+
+
 # ==================== 健康检查 ====================
 
 def health_check(request):
@@ -583,6 +945,45 @@ def health_check(request):
 
 
 # ==================== 辅助函数 ====================
+
+def _generation_denied(request, task_id=None, record_id=None):
+    """Check both identifiers before loading owner prompts, providers, or tasks."""
+    user = actor(request.user_id)
+    record = None
+    if task_id is not None and (
+        not isinstance(task_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', task_id)
+    ):
+        return api_error_response('任务 ID 无效。', status=400)
+    if record_id:
+        record = HistoryRecord.objects.filter(pk=record_id).first()
+        if record is None:
+            return api_error_response('作品不存在。', status=404)
+        if not can_modify(user, record):
+            return api_error_response('无权修改该作品。', status=403)
+        existing_task = (record.images or {}).get('task_id')
+        if task_id and existing_task and task_id != existing_task:
+            return api_error_response('任务不属于该作品。', status=400)
+        task_id = task_id or existing_task
+        if task_id and (not isinstance(task_id, str)
+                        or not re.fullmatch(r'[A-Za-z0-9_-]+', task_id)):
+            return api_error_response('任务 ID 无效。', status=400)
+    if task_id:
+        records = list(task_records(task_id))
+        if any(not can_modify(user, item) for item in records):
+            return api_error_response('无权修改该任务。', status=403)
+        if record and records and any(item.user_id != record.user_id for item in records):
+            return api_error_response('任务不属于该作品。', status=400)
+    if request.method == 'POST':
+        data = json_body(request)
+        pages = data.get('pages', [])
+        if 'page' in data:
+            pages = [data['page']]
+        if not isinstance(pages, list) or any(
+            not isinstance(page, dict) or type(page.get('index')) is not int or page['index'] < 0
+            for page in pages
+        ):
+            return api_error_response('页面索引无效。', status=400)
+    return None
 
 def _find_task_owner(task_id: str):
     """通过历史记录反查任务归属的用户 ID（用于图片目录按用户隔离）"""

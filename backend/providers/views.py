@@ -177,6 +177,9 @@ def get_config(request):
         user_id = request.user_id
         user = request.user_obj
 
+        # Other workers may have copied a file-backed provider.
+        reload_config()
+
         if user.get('is_admin'):
             # 管理员：共享配置全量（保留 allowed_users 供展示/配置）
             image_config = load_shared_providers_config('image')
@@ -199,19 +202,21 @@ def get_config(request):
                     for _p in _cfg.get('providers', {}).values():
                         _p.pop('allowed_users', None)
 
+        from library.services import order_providers
+
         return JsonResponse({
             "success": True,
             "config": {
                 "text_generation": {
                     "active_provider": text_config.get('active_provider', ''),
                     "providers": prepare_providers_for_response(
-                        text_config.get('providers', {})
+                        order_providers(user_id, 'text', text_config.get('providers', {}))
                     )
                 },
                 "image_generation": {
                     "active_provider": image_config.get('active_provider', ''),
                     "providers": prepare_providers_for_response(
-                        image_config.get('providers', {})
+                        order_providers(user_id, 'image', image_config.get('providers', {}))
                     )
                 }
             }
@@ -360,6 +365,9 @@ def save_provider(request):
                 context={"endpoint": "/api/config/providers/save"},
             )
         try:
+            if kind == 'image' and config.get('type') == 'image_api':
+                from generation.generators.gpt_images import validate_image_endpoint
+                validate_image_endpoint(config.get('endpoint_type') or '')
             save_single_provider(kind, name, config, request.user_id)
         except ValueError as ve:
             return api_error_response(
@@ -406,7 +414,8 @@ def test_connection(request):
             'api_key': data.get('api_key'),
             'base_url': data.get('base_url'),
             'model': data.get('model'),
-            'endpoint_type': data.get('endpoint_type')
+            'endpoint_type': data.get('endpoint_type'),
+            'api_protocol': data.get('api_protocol'),
         }
 
         # 如果没有提供 api_key，从配置文件读取
@@ -463,7 +472,13 @@ def _load_provider_config(provider_type: str, provider_name: str, config: dict, 
             config['base_url'] = saved.get('base_url')
         if not config['model']:
             config['model'] = saved.get('model')
-        if not config.get('endpoint_type'):
+        # An edited protocol/endpoint must not inherit a conflicting saved value.
+        if not config.get('api_protocol') and not config.get('endpoint_type'):
+            config['api_protocol'] = saved.get('api_protocol')
+        if not config.get('endpoint_type') and (
+            not config.get('api_protocol')
+            or config.get('api_protocol') == saved.get('api_protocol')
+        ):
             config['endpoint_type'] = saved.get('endpoint_type')
 
     return config
@@ -562,6 +577,19 @@ def _test_google_gemini(config: dict, test_prompt: str) -> dict:
 
 def _test_openai_compatible(config: dict, test_prompt: str) -> dict:
     """测试 OpenAI 兼容接口"""
+    from generation.utils.text_protocol import resolve_text_protocol
+
+    if resolve_text_protocol(config) == 'responses':
+        from generation.utils.responses_client import ResponsesTextClient
+
+        client = ResponsesTextClient(
+            api_key=config.get('api_key'),
+            base_url=config.get('base_url'),
+            endpoint_type=config.get('endpoint_type'),
+            timeout=30,
+        )
+        text = client.generate_text(test_prompt, model=config.get('model'))
+        return _check_response(LlmSmokeResult(text, "content", ""))
     result = _test_openai_chat_completion(config, test_prompt)
     return _check_response(result)
 
@@ -575,6 +603,8 @@ def _test_image_api(config: dict) -> dict:
         base_url = base_url[:-3]
 
     endpoint_type = config.get('endpoint_type', '')
+    from generation.generators.gpt_images import validate_image_endpoint
+    validate_image_endpoint(endpoint_type or '')
 
     # 如果端点是 chat/completions 类型，用真实 LLM 请求来测试
     if endpoint_type and ('chat' in endpoint_type or 'completions' in endpoint_type):
@@ -595,7 +625,9 @@ def _test_image_api(config: dict) -> dict:
     if response.status_code == 200:
         return {
             "success": True,
-            "message": "连接成功！仅代表连接稳定，不确定是否可以稳定支持图片生成"
+            "warning": True,
+            "status": "warning",
+            "message": "鉴权检查通过，尚未验证图片生成。请在图片制作页生成一张图片以确认模型权限和接口兼容性。"
         }
     else:
         raise Exception(f"HTTP {response.status_code}: {response.text[:200]}")

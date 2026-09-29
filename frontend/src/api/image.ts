@@ -13,14 +13,12 @@ import type {
   ProgressEvent
 } from './types'
 import type { AppError } from '../utils/errors'
+import type { ImageStyle } from '../features/styles/catalog'
 
-/** 通知后端真正取消当前用户的生成任务（图片/大纲/文案均生效） */
+/** Ask the backend to cancel; acknowledgement does not guarantee the upstream request stops billing. */
 export async function cancelCurrentGeneration(): Promise<void> {
-  try {
-    await axios.post(`${API_BASE_URL}/generate/cancel`)
-  } catch (e) {
-    console.error('通知后端取消失败:', e)
-  }
+  const response = await axios.post(`${API_BASE_URL}/generate/cancel`, undefined, { timeout: 10000 })
+  if (response.data?.success !== true) throw new Error('服务端未确认取消请求。')
 }
 
 export function getImageUrl(taskId: string, filename: string, thumbnail: boolean = true): string {
@@ -46,9 +44,13 @@ export async function regenerateImage(
     fullOutline?: string
     userTopic?: string
     recordId?: string | null
+    imageStyle?: ImageStyle
+    referenceRoles?: string[]
+    userImages?: File[]
   },
   imagePromptName?: string,
-  providerName?: string
+  providerName?: string,
+  imageParameters?: Record<string, string>
 ): Promise<{ success: boolean; index: number; image_url?: string; error?: AppError | string; error_message?: string }> {
   const response = await axios.post(`${API_BASE_URL}/regenerate`, {
     task_id: taskId,
@@ -57,8 +59,11 @@ export async function regenerateImage(
     full_outline: context?.fullOutline,
     user_topic: context?.userTopic,
     record_id: context?.recordId || undefined,
+    image_style: context?.imageStyle,
+    reference_roles: context?.referenceRoles,
+    user_images: context?.userImages ? await Promise.all(context.userImages.map(readFileAsDataUrl)) : undefined,
     image_prompt_name: imagePromptName || '',
-    provider_name: providerName || ''
+    provider_name: providerName || '', image_parameters: imageParameters
   })
   return response.data
 }
@@ -73,7 +78,10 @@ export async function retryFailedImages(
   onStreamError: (error: unknown) => void,
   recordId?: string | null,
   imagePromptName?: string,
-  providerName?: string
+  providerName?: string,
+  imageStyle?: ImageStyle,
+  useCoverAsReference: boolean = true,
+  imageParameters?: Record<string, string>
 ) {
   try {
     const response = await fetch(`${API_BASE_URL}/retry-failed`, {
@@ -86,7 +94,10 @@ export async function retryFailedImages(
         pages,
         record_id: recordId || undefined,
         image_prompt_name: imagePromptName || '',
-        provider_name: providerName || ''
+        provider_name: providerName || '',
+        image_style: imageStyle,
+        use_reference: useCoverAsReference,
+        image_parameters: imageParameters,
       })
     })
 
@@ -120,7 +131,11 @@ export async function generateImagesPost(
   force: boolean = false,
   imagePromptName?: string,
   signal?: AbortSignal,
-  providerName?: string
+  providerName?: string,
+  imageStyle?: ImageStyle,
+  useCoverAsReference: boolean = true,
+  imageParameters?: Record<string, string>,
+  referenceRoles?: string[],
 ) {
   try {
     const userImagesBase64 = userImages && userImages.length > 0
@@ -142,7 +157,11 @@ export async function generateImagesPost(
         record_id: recordId || undefined,
         force,
         image_prompt_name: imagePromptName || '',
-        provider_name: providerName || ''
+        provider_name: providerName || '',
+        image_style: imageStyle,
+        use_reference: useCoverAsReference,
+        image_parameters: imageParameters,
+        reference_roles: referenceRoles,
       })
     })
 
@@ -161,7 +180,7 @@ export async function generateImagesPost(
   }
 }
 
-function readFileAsDataUrl(file: File): Promise<string> {
+export function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = () => resolve(reader.result as string)

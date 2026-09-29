@@ -1,17 +1,28 @@
 import { useRouter } from 'vue-router'
 import { useGeneratorStore } from '../stores/generator'
 import { generateImagesPost, cancelCurrentGeneration } from '../api'
-import { formatErrorMessage, normalizeApiError, type AppError } from '../utils/errors'
+import { normalizeApiError, type AppError } from '../utils/errors'
 import { useGenerationRestore } from './useGenerationRestore'
 import type { Page } from '../api'
+import { contentSource } from '../utils/contentSource'
+import { styleChoice, resolveImageStyle, type ImageStyle } from '../features/styles/catalog'
+import { readLayout } from '../features/generationOptions'
+import { resolvePromptValue } from '../features/promptCatalog'
 
 export interface ImageGenerationInput {
   topic: string
   raw: string
   pages: Page[]
   userImages: File[]
+  referenceRoles?: string[]
   imagePromptName: string
   imageModelName: string
+  imageStyle?: ImageStyle
+  useCoverAsReference: boolean
+  imageResolution: string
+  imageAspectRatio: string
+  imageQuality: string
+  imageOutputFormat: string
 }
 
 export function useGenerationRunner(
@@ -31,10 +42,15 @@ export function useGenerationRunner(
       return
     }
     const input = snapshot || {
-      topic: store.topic, raw: store.outline.raw,
+      topic: store.topic, raw: contentSource(store.topic, store.outline.pages).outline,
       pages: store.outline.pages.map(page => ({ ...page })),
       userImages: [...store.userImages],
+        referenceRoles: [...store.referenceRoles],
       imagePromptName: store.imagePromptName, imageModelName: store.imageModelName,
+      imageStyle: { ...store.imageStyle },
+      useCoverAsReference: store.useCoverAsReference,
+      imageResolution: store.imageResolution, imageAspectRatio: store.imageAspectRatio,
+      imageQuality: store.imageQuality, imageOutputFormat: store.imageOutputFormat,
     }
 
     // Claim ownership before saving; terminal events release it even if EOF stalls.
@@ -68,9 +84,12 @@ export function useGenerationRunner(
 
     try {
       setError(null)
+      input.imageStyle = resolveImageStyle(input.imageStyle || store.imageStyle)
+      for (const page of input.pages) resolvePromptValue('image', 'layout', readLayout(page.content))
       const recordId = await ensureRecord()
       if (!acceptsEvents()) return
       store.startGeneration()
+      store.imageStyle.applied = styleChoice(input.imageStyle || store.imageStyle)
       run.started = true
       await generateImagesPost(
         input.pages,
@@ -83,12 +102,14 @@ export function useGenerationRunner(
           }
         }),
         event => consume(() => {
+          const pageError = normalizeApiError(event.error || event.message || '图片生成失败', '图片生成失败')
           store.updateProgress(
             event.index,
             'error',
             undefined,
-            formatErrorMessage(event.error || event.message || '图片生成失败', '图片生成失败'),
+            `${pageError.title}：${pageError.detail}`,
           )
+          setError(pageError)
         }),
         event => consume(() => {
           store.finishGeneration(event.task_id)
@@ -102,6 +123,11 @@ export function useGenerationRunner(
         input.imagePromptName,
         run.controller.signal,
         input.imageModelName,
+        input.imageStyle,
+        input.useCoverAsReference,
+        { resolution: input.imageResolution, aspect_ratio: input.imageAspectRatio,
+          quality: input.imageQuality, output_format: input.imageOutputFormat },
+        input.referenceRoles,
       )
       fail('连接中断，未收到完成确认', '图片生成中断')
     } catch (error) {

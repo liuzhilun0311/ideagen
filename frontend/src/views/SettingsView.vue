@@ -19,22 +19,32 @@
       />
 
       <div
-        v-else-if="feedback?.type === 'success'"
+        v-else-if="feedback?.type === 'success' || feedback?.type === 'warning'"
         class="success-card"
+        :class="{ 'connection-warning': feedback.type === 'warning' }"
         role="status"
         aria-live="polite"
       >
-        <span>{{ feedback.message }}</span>
+        <span>{{ feedback.type === 'warning' ? '尚未验证生成：' : '' }}{{ feedback.message }}</span>
         <button type="button" @click="clearFeedback" aria-label="关闭提示">×</button>
       </div>
 
+      <nav class="model-tabs" aria-label="模型类型">
+        <button type="button" :class="{ active: activeModelType === 'text' }" :aria-pressed="activeModelType === 'text'" @click="activeModelType = 'text'">
+          文本生成 <span>{{ Object.keys(textConfig.providers || {}).length }}</span>
+        </button>
+        <button type="button" :class="{ active: activeModelType === 'image' }" :aria-pressed="activeModelType === 'image'" @click="activeModelType = 'image'">
+          图片生成 <span>{{ Object.keys(imageConfig.providers || {}).length }}</span>
+        </button>
+      </nav>
+
       <!-- 文本生成配置 -->
-      <div class="card">
+      <div v-if="activeModelType === 'text'" class="card">
         <div class="section-header">
           <div>
             <h2 class="section-title">文本生成配置</h2>
           </div>
-          <button class="btn btn-primary btn-small" @click="openAddTextModal">
+          <button class="btn btn-primary btn-small" :disabled="textBusy" @click="openAddTextModal">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="12" y1="5" x2="12" y2="19"></line>
               <line x1="5" y1="12" x2="19" y2="12"></line>
@@ -44,7 +54,10 @@
         </div>
 
         <!-- 服务商列表表格 -->
+        <p v-if="textOrder.error.value" role="alert">{{ textOrder.error.value }}</p>
         <ProviderTable
+          :order="textOrder.order.value"
+          :busy="textBusy"
           :providers="textConfig.providers"
           :activeProvider="textConfig.active_provider"
           :canConfigureUsers="isAdmin"
@@ -53,16 +66,18 @@
           @delete="deleteTextProvider"
           @test="testTextProviderInList"
           @users="(name, provider) => openProviderUsersModal('text', name, provider)"
+          @copy="name => copyProvider('text', name)"
+          @move="(source, target) => moveProvider('text', source, target)"
         />
       </div>
 
       <!-- 图片生成配置 -->
-      <div class="card">
+      <div v-else class="card">
         <div class="section-header">
           <div>
             <h2 class="section-title">图片生成配置</h2>
           </div>
-          <button class="btn btn-primary btn-small" @click="openAddImageModal">
+          <button class="btn btn-primary btn-small" :disabled="imageBusy" @click="openAddImageModal">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="12" y1="5" x2="12" y2="19"></line>
               <line x1="5" y1="12" x2="19" y2="12"></line>
@@ -72,7 +87,10 @@
         </div>
 
         <!-- 服务商列表表格 -->
+        <p v-if="imageOrder.error.value" role="alert">{{ imageOrder.error.value }}</p>
         <ProviderTable
+          :order="imageOrder.order.value"
+          :busy="imageBusy"
           :providers="imageConfig.providers"
           :activeProvider="imageConfig.active_provider"
           :canConfigureUsers="isAdmin"
@@ -81,6 +99,8 @@
           @delete="deleteImageProvider"
           @test="testImageProviderInList"
           @users="(name, provider) => openProviderUsersModal('image', name, provider)"
+          @copy="name => copyProvider('image', name)"
+          @move="(source, target) => moveProvider('image', source, target)"
         />
       </div>
     </div>
@@ -145,7 +165,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onActivated, onDeactivated, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
+import { useLibraryOrder } from '../composables/useLibraryOrder'
 import ProviderTable from '../components/settings/ProviderTable.vue'
 import ProviderModal from '../components/settings/ProviderModal.vue'
 import ImageProviderModal from '../components/settings/ImageProviderModal.vue'
@@ -193,6 +215,7 @@ const {
 
   // 方法
   loadConfig,
+  invalidateConfigLoad,
   clearFeedback,
 
   // 文本服务商方法
@@ -221,6 +244,87 @@ const {
 // 是否管理员（"用户配置"按钮仅管理员可见可操作）
 const authStore = useAuthStore()
 const isAdmin = computed(() => authStore.isAdmin)
+
+const textIds = computed(() => Object.keys(textConfig.value.providers))
+const imageIds = computed(() => Object.keys(imageConfig.value.providers))
+const activeModelType = ref<'text' | 'image'>('text')
+const textOrder = useLibraryOrder('models', ref('text'), textIds)
+const imageOrder = useLibraryOrder('models', ref('image'), imageIds)
+const copying = ref({ text: false, image: false })
+const contextActive = ref(true)
+let contextEpoch = 0
+const textBusy = computed(() => !contextActive.value || copying.value.text || textOrder.busy.value)
+const imageBusy = computed(() => !contextActive.value || copying.value.image || imageOrder.busy.value)
+
+function invalidateContext() {
+  ++contextEpoch
+  invalidateConfigLoad()
+  contextActive.value = false
+  copying.value = { text: false, image: false }
+  textOrder.invalidate()
+  imageOrder.invalidate()
+  closeTextModal()
+  closeImageModal()
+  providerUsersModal.value = false
+  textConfig.value = { active_provider: '', providers: {} }
+  imageConfig.value = { active_provider: '', providers: {} }
+  clearFeedback()
+}
+
+watch(() => [authStore.token, authStore.user?.id, authStore.sessionRevision], invalidateContext, { flush: 'sync' })
+// The form loader writes its refs internally; discard late config reads after navigation/session changes.
+watch([textConfig, imageConfig, feedback], () => {
+  if (contextActive.value) return
+  if (Object.keys(textConfig.value.providers).length) textConfig.value = { active_provider: '', providers: {} }
+  if (Object.keys(imageConfig.value.providers).length) imageConfig.value = { active_provider: '', providers: {} }
+  if (feedback.value) clearFeedback()
+}, { flush: 'sync' })
+onBeforeRouteLeave(invalidateContext)
+onDeactivated(invalidateContext)
+onBeforeUnmount(invalidateContext)
+onActivated(() => {
+  if (!contextActive.value) {
+    contextActive.value = true
+    void loadConfig()
+  }
+})
+
+async function moveProvider(kind: 'text' | 'image', source: string, target: string) {
+  if ((kind === 'text' ? textBusy : imageBusy).value) return
+  await (kind === 'text' ? textOrder : imageOrder).move(source, target)
+}
+
+async function copyProvider(kind: 'text' | 'image', source: string) {
+  const library = kind === 'text' ? textOrder : imageOrder
+  const config = kind === 'text' ? textConfig : imageConfig
+  if ((kind === 'text' ? textBusy : imageBusy).value || !Object.prototype.hasOwnProperty.call(config.value.providers, source)) return
+  const epoch = contextEpoch
+  const current = () => contextActive.value && epoch === contextEpoch
+  copying.value[kind] = true
+  clearFeedback()
+  let created: { id: string; name: string } | null = null
+  try {
+    created = await library.copy(source)
+    if (!current() || !created) return
+    const loaded = await loadConfig()
+    if (!current()) return
+    const provider = config.value.providers[created.id]
+    if (!loaded || !provider) throw new Error('刷新列表失败')
+    if (kind === 'text') openEditTextModal(created.id, provider)
+    else openEditImageModal(created.id, provider)
+  } catch (error) {
+    if (!current()) return
+    feedback.value = {
+      type: 'error',
+      error: normalizeApiError(
+        created ? '副本已创建，但刷新列表失败。请刷新页面查看副本，不要重复复制。' : error,
+        created ? '副本已创建，刷新失败' : '复制失败',
+      ),
+    }
+  } finally {
+    if (current()) copying.value[kind] = false
+  }
+}
 
 // ==================== 管理员：配置服务商可用用户 ====================
 
@@ -285,6 +389,46 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.model-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  padding: 4px;
+  background: #eef3fb;
+  border-radius: 10px;
+  width: fit-content;
+}
+.model-tabs button {
+  border: 0;
+  background: transparent;
+  color: #52627a;
+  padding: 10px 18px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.model-tabs button.active {
+  background: #fff;
+  color: #285de8;
+  box-shadow: 0 1px 4px rgba(24, 55, 110, .12);
+  font-weight: 600;
+}
+.model-tabs span {
+  display: inline-block;
+  min-width: 20px;
+  margin-left: 5px;
+  color: #7d8da6;
+  font-size: 12px;
+}
+@media (max-width: 600px) {
+  .model-tabs { width: 100%; }
+  .model-tabs button { flex: 1; padding: 10px 8px; }
+}
+.success-card.connection-warning {
+  background: #fff8dd;
+  border-color: #dbc26b;
+  color: #705619;
+}
 .settings-container {
   max-width: 1200px;
   margin: 0 auto;

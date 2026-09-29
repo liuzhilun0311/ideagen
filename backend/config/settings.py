@@ -2,6 +2,10 @@
 Django 项目设置 — AI 图文生成器 Django 版
 """
 from pathlib import Path
+
+# Keep the request byte budget without imposing a multipart file count limit.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 40 * 1024 * 1024
+DATA_UPLOAD_MAX_NUMBER_FILES = None
 import os
 
 # 代码根目录（backend/，config/settings.py 的上级的上级）

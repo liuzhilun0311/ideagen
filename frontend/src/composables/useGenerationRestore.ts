@@ -1,5 +1,8 @@
 import { useGeneratorStore } from '../stores/generator'
 import { normalizeApiError } from '../utils/errors'
+import { normalizeImageStyle } from '../features/styles/catalog'
+import { selectedTitleIndex } from '../utils/publicationContent'
+import { restoreCreationInputs } from '../features/creationInputs'
 import {
   createHistory,
   getHistory,
@@ -25,11 +28,40 @@ export function useGenerationRestore() {
 
     store.setTopic(record.title)
     store.setOutline(record.outline.raw, pages)
+    restoreCreationInputs(store, record.outline.creation_inputs)
+    store.outline.organization = record.outline.organization
+    store.outline.generation_preferences = record.outline.generation_preferences
+    store.outline.requested_preferences = record.outline.requested_preferences
+    store.outline.copy_preferences = record.outline.copy_preferences
+    store.outline.generation_record_id = record.outline.generation_record_id
+    store.outline.generation_audit = record.generation_audit
+    store.outline.growth_recommendation = record.outline.growth_recommendation
+    const requested = record.outline.requested_preferences || record.outline.generation_preferences
+    store.outlineAudience = requested?.audience || '自动判断'
+    store.outlineAudienceDetail = requested?.audience_detail || ''
+    store.outlineTone = requested?.tone || '自动匹配'
+    store.outlineOrganization = requested?.organization || record.outline.organization || '自动'
+    store.outlinePageCount = requested?.page_count || 'auto'
+    store.outlineContentForm = requested?.content_form || 'auto'
+    store.outlineInformationDensity = requested?.information_density || 'auto'
+    store.outlinePlatform = (record.outline.requested_preferences || record.outline.generation_preferences)?.platform || 'auto'
+    store.outlineGoal = (record.outline.requested_preferences || record.outline.generation_preferences)?.goal || 'auto'
     store.setRecordId(record.id)
+    store.analysisSnapshots = (record.analysis_snapshots || []).map(snapshot => ({
+      ...snapshot,
+      parts: [...snapshot.parts],
+      content: { ...snapshot.content },
+      layout: { ...snapshot.layout },
+      visual_style: { ...snapshot.visual_style },
+    }))
+    store.imageStyle = normalizeImageStyle(record.image_style, record.outline.growth_recommendation)
     // 恢复已生成的文案（标题/文案/标签）
     const c = record.content
     if (c && ((c.titles && c.titles.length) || c.copywriting)) {
       store.setContent(c.titles || [], c.copywriting || '', c.tags || [])
+      store.content.diagnostic_record_id = c.diagnostic_record_id
+      store.content.selectedTitleIndex = selectedTitleIndex(c.titles || [], c.selected_title_index)
+      if (c.source) store.content.source = { ...c.source }
     }
     store.taskId = taskId
     store.images = pages.map((page, idx) => {
@@ -70,7 +102,7 @@ export function useGenerationRestore() {
       const result = await createHistory(store.topic, {
         raw: store.outline.raw,
         pages: store.outline.pages
-      })
+      }, undefined, store.outline.generation_audit)
       if (!result.success || !result.record_id) {
         throw normalizeApiError(
           result.error || result.error_message || '历史记录未返回 ID',

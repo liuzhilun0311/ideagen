@@ -5,29 +5,42 @@ import { ArrowLeft, Check, Copy, Download, ImageOff, RefreshCw, ZoomIn } from 'l
 import { useGeneratorStore, type GeneratedImage } from '../stores/generator'
 import ContentDisplay from '../components/result/ContentDisplay.vue'
 import ImageViewer from '../components/common/ImageViewer.vue'
-import { runDeaiDownload, downloadAsZip } from '../composables/useDeaiDownload'
+import ImageDownloadDialog from '../components/common/ImageDownloadDialog.vue'
+import { usePostprocessing } from '../composables/usePostprocessing'
+import { withToken } from '../api/image'
 import { authHeaders } from '../api/client'
 import { getToken } from '../api/token'
 import { getOriginalImageUrl, isAuthenticatedImageUrl } from '../utils/imageUrl'
+import { useStudioSession } from '../stores/studioSession'
+import { selectedTitle } from '../utils/publicationContent'
 
 const store = useGeneratorStore()
 const router = useRouter()
+const session = useStudioSession()
+const processing = usePostprocessing(computed(() => store.recordId))
+const downloadVisible = ref(false)
+const downloadIndex = ref<number | null>(null)
+const downloadPages = computed(() => store.images.filter(image => image.status === 'done' && image.url)
+  .filter(image => downloadIndex.value === null || image.index === downloadIndex.value)
+  .map(image => {
+    const version = processing.pages.value.find(page => page.index === image.index)
+    return { index: image.index, original_url: version?.original_url || image.url, processed_url: version?.processed_url || null }
+  }))
+const downloadContent = computed(() => {
+  const titles = store.content.titles
+  return { ...store.content, titles: titles.length ? [selectedTitle(titles, store.content.selectedTitleIndex)] : [] }
+})
 const selectedIndex = ref<number | null>(null)
 const pages = computed(() => {
   const indices = new Set([...store.outline.pages.map(p => p.index), ...store.images.map(i => i.index)])
   return [...indices].sort((a, b) => a - b).map(index => ({
     index,
-    image: store.images.find(i => i.index === index),
+    image: adoptedImage(store.images.find(i => i.index === index)),
   }))
 })
 const selected = computed(() => pages.value.find(p => p.index === selectedIndex.value) ?? pages.value[0])
 const generatedImages = computed(() => store.images.filter(i => i.status === 'done' && i.url))
 const failedCount = computed(() => pages.value.filter(p => p.image?.status === 'error').length)
-const deaiStrength = ref<'light' | 'medium' | 'heavy'>('medium')
-const downloadWorking = ref(false)
-const downloadStage = ref('')
-const downloadMessage = ref('')
-const downloadError = ref('')
 const imageWorking = ref(false)
 const imageMessage = ref('')
 const imageError = ref('')
@@ -40,7 +53,19 @@ const viewerAlt = ref('')
 let copyTimer: ReturnType<typeof setTimeout> | undefined
 onUnmounted(() => clearTimeout(copyTimer))
 
-function goEdit() { void router.push('/workspace') }
+function goEdit() { void router.push(session.workspacePath === '/workspace/copy' ? '/workspace/copy' : '/workspace') }
+function goImages() { void router.push('/workspace') }
+function adoptedImage(image?: GeneratedImage) {
+  if (!image) return undefined
+  const version = processing.pages.value.find(page => page.index === image.index)
+  return version?.adopted === 'processed' && version.processed_url
+    ? { ...image, url: withToken(version.processed_url) } : image
+}
+function openDownload(index: number | null = null) {
+  downloadIndex.value = index
+  downloadVisible.value = true
+  void processing.refresh()
+}
 function statusLabel(image?: GeneratedImage) {
   if (image?.status === 'error') return '生成失败'
   if (image?.status === 'generating' || image?.status === 'retrying') return '生成中'
@@ -105,43 +130,6 @@ async function imageAction(image: GeneratedImage, action: 'copy' | 'download') {
     imageWorking.value = false
   }
 }
-async function downloadAll(zipOnly = false) {
-  if (downloadWorking.value || !generatedImages.value.length) return
-  downloadWorking.value = true
-  downloadError.value = ''
-  downloadMessage.value = ''
-  downloadStage.value = '准备下载…'
-  const images = generatedImages.value.map(({ index, url }) => ({ index, url }))
-  const content = {
-    titles: [...store.content.titles],
-    copywriting: store.content.copywriting,
-    tags: [...store.content.tags],
-  }
-  const taskId = store.taskId || images[0]?.url.match(/\/api\/images\/([^/]+)\//)?.[1] || ''
-  const strength = deaiStrength.value
-  try {
-    // Keep the picker in the click handler, before asynchronous preparation.
-    const picker = (window as Window & {
-      showDirectoryPicker?: (options: { mode: string; startIn: string }) => Promise<unknown>
-    }).showDirectoryPicker
-    const dirHandle = !zipOnly && picker
-      ? await picker.call(window, { mode: 'readwrite', startIn: 'downloads' })
-      : null
-    const options = { taskId, strength, images, content, setStage: (text: string) => { downloadStage.value = text } }
-    const result = dirHandle
-      ? await runDeaiDownload({ ...options, dirHandle })
-      : await downloadAsZip(options)
-    if (result.ok) downloadMessage.value = result.message
-    else downloadError.value = result.message || '下载失败'
-  } catch (error) {
-    if (!(error instanceof Error && error.name === 'AbortError')) {
-      downloadError.value = error instanceof Error ? error.message : '下载失败'
-    }
-  } finally {
-    downloadWorking.value = false
-    downloadStage.value = ''
-  }
-}
 </script>
 
 <template>
@@ -155,24 +143,13 @@ async function downloadAll(zipOnly = false) {
       <button type="button" class="btn btn-secondary" @click="goEdit"><ArrowLeft :size="18" aria-hidden="true" />返回工作台</button>
     </header>
 
-    <section class="download-section" aria-label="作品下载" :aria-busy="downloadWorking">
+    <section class="download-section" aria-label="作品下载">
       <div class="download-controls">
-        <label class="strength-field" for="deai-strength">去AI化强度
-          <select id="deai-strength" v-model="deaiStrength" class="field" :disabled="downloadWorking">
-            <option value="light">轻度</option><option value="medium">中度</option><option value="heavy">重度</option>
-          </select>
-        </label>
-        <button type="button" class="btn btn-primary" :disabled="downloadWorking || !generatedImages.length" @click="downloadAll()">
-          <Download :size="18" aria-hidden="true" />{{ downloadWorking ? '处理中…' : '去AI化下载' }}
+        <button type="button" class="btn btn-primary" :disabled="!generatedImages.length" @click="openDownload()">
+          <Download :size="18" aria-hidden="true" />下载作品
         </button>
       </div>
-      <p v-if="downloadStage" role="status">{{ downloadStage }}</p>
-      <p v-if="downloadMessage" class="download-message" role="status">{{ downloadMessage }}</p>
-      <div v-if="downloadError" class="feedback error" role="alert">
-        <p>{{ downloadError }}</p>
-        <button type="button" class="btn btn-secondary" :disabled="downloadWorking" @click="downloadAll()"><RefreshCw :size="18" aria-hidden="true" />重试下载</button>
-        <button type="button" class="btn btn-secondary" :disabled="downloadWorking" @click="downloadAll(true)"><Download :size="18" aria-hidden="true" />去AI化 ZIP 下载</button>
-      </div>
+      <p v-if="processing.error.value" role="alert" class="error">{{ processing.error.value.detail }}</p>
     </section>
 
     <section class="image-section" aria-label="图片预览">
@@ -188,12 +165,12 @@ async function downloadAll(zipOnly = false) {
           <div v-if="selected.image?.url" class="image-actions">
             <button type="button" class="icon-button" title="放大图片" aria-label="放大图片" @click="openImage(selected.image)"><ZoomIn :size="20" aria-hidden="true" /></button>
             <button type="button" class="icon-button" title="复制图片" aria-label="复制图片" :disabled="imageWorking" @click="imageAction(selected.image, 'copy')"><Check v-if="copiedImageIndex === selected.index" :size="20" aria-hidden="true" /><Copy v-else :size="20" aria-hidden="true" /></button>
-            <button type="button" class="icon-button" title="下载单张原图" aria-label="下载单张原图" :disabled="imageWorking" @click="imageAction(selected.image, 'download')"><Download :size="20" aria-hidden="true" /></button>
+            <button type="button" class="icon-button" title="下载当前图片" aria-label="下载当前图片" :disabled="imageWorking" @click="openDownload(selected.index)"><Download :size="20" aria-hidden="true" /></button>
           </div>
         </div>
         <div v-if="selected.image?.status === 'error'" class="page-error error" role="status">
           <p>{{ selected.image.error || '此页生成失败' }}</p>
-          <button type="button" class="btn btn-secondary" @click="goEdit"><ArrowLeft :size="18" aria-hidden="true" />返回编辑</button>
+          <button type="button" class="btn btn-secondary" @click="goImages"><ArrowLeft :size="18" aria-hidden="true" />返回图片制作</button>
         </div>
         <button v-if="selected.image?.url && !brokenUrls.has(selected.image.url)" type="button" class="preview-image" :aria-label="`放大第 ${selected.index + 1} 页图片`" @click="openImage(selected.image)">
           <img :src="selected.image.url" :alt="imageAlt(selected.index)" @error="brokenUrls.add(selected.image.url)" />
@@ -218,7 +195,10 @@ async function downloadAll(zipOnly = false) {
         </nav>
       </template>
     </section>
-    <ContentDisplay />
+    <ContentDisplay selected-only />
+    <ImageDownloadDialog :visible="downloadVisible" :pages="downloadPages" :loading="processing.loading.value"
+      :load-error="processing.error.value?.detail" :content="downloadIndex === null ? downloadContent : undefined"
+      @close="downloadVisible = false" @process="downloadVisible = false; goImages()" />
     <ImageViewer :visible="viewerVisible" :src="viewerSrc" :alt="viewerAlt" @close="viewerVisible = false" />
   </div>
 </template>

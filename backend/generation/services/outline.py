@@ -6,8 +6,26 @@ from typing import Dict, List, Any, Optional
 
 from providers.config import get_text_provider_config, load_text_providers_config
 from prompts.services import safe_format
+from prompts.catalog_runtime import options as catalog_options
 from ..utils.text_client import get_text_chat_client
 from .task_cancel import is_cancelled, reset_cancel
+from ..styles import recommendation_instruction, extract_recommendation
+from ..recommendations import (
+    recommendation_instruction as generation_recommendation_instruction,
+    extract_generation_recommendation,
+    extract_growth_recommendation,
+)
+from ..structure import organization_instruction, extract_organization, page_metadata
+from ..outline_prompt import build_outline_prompt
+from ..page_count import validate_page_count
+from ..diagnostics import sanitize, record_current
+from ..platform_recommendations import (
+    normalize_goal,
+    normalize_growth_recommendation,
+    normalize_platform,
+    recommend_growth,
+)
+from prompts.catalog_runtime import options as catalog_options
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +35,7 @@ class OutlineService:
         logger.debug("初始化 OutlineService...")
         self.user_id = user_id
         self.text_config = load_text_providers_config(user_id)
-        self.client = self._get_client()
+        self.client = None
         self.prompt_template = self._load_prompt_template()
         logger.info(f"OutlineService 初始化完成，使用服务商: {self.text_config.get('active_provider')}")
 
@@ -59,13 +77,15 @@ class OutlineService:
                     "封面": "cover",
                     "内容": "content",
                     "总结": "summary",
+                    "信息图": "infographic",
                 }
                 page_type = type_mapping.get(type_cn, "content")
 
             pages.append({
                 "index": index,
                 "type": page_type,
-                "content": page_text
+                "content": page_text,
+                **page_metadata(page_text),
             })
 
         return pages
@@ -77,43 +97,29 @@ class OutlineService:
         prompt_text: Optional[str] = None,
         reference_content: Optional[str] = None,
         provider_name: Optional[str] = None,
+        organization: str = "自动",
+        options=None,
+        prepared_prompt=None,
+        on_send=None,
     ) -> Dict[str, Any]:
         # 开始新任务：清除该用户的取消标记
         reset_cancel(self.user_id)
+        provider_config = {}
+        prompt = prepared_prompt or prompt_text
         try:
             logger.info(
                 f"开始生成大纲: topic={topic[:50]}..., images={len(images) if images else 0}, "
                 f"reference_content={len((reference_content or '').strip())}字"
             )
-            if prompt_text:
-                # 使用用户自定义提示词（缺失占位符原样保留，不报错）
-                prompt = safe_format(prompt_text, {
-                    "topic": topic,
-                    "reference_content": reference_content or '',
-                })
-            else:
-                prompt = self.prompt_template.format(topic=topic)
-
-            # 用户输入了参考内容：把参考内容作为创作素材并入提示词
-            if reference_content and str(reference_content).strip():
-                prompt += (
-                    "\n\n===== 用户提供的参考内容 =====\n"
-                    f"{str(reference_content).strip()}\n"
-                    "==============================\n"
-                    "要求：请把以上参考内容作为核心创作素材，结合主题生成图文大纲。"
-                    "大纲内容应紧扣参考内容展开（引用其中的关键信息、风格、卖点或素材），"
-                    "不要脱离参考内容自由发挥。"
-                )
-                logger.debug("添加了参考内容到提示词")
-
-            if images and len(images) > 0:
-                prompt += f"\n\n注意：用户提供了 {len(images)} 张参考图片，请在生成大纲时考虑这些图片的内容和风格。这些图片可能是产品图、个人照片或场景图，请根据图片内容来优化大纲，使生成的内容与图片相关联。"
-                logger.debug(f"添加了 {len(images)} 张参考图片到提示词")
-
+            prompt = prepared_prompt if prepared_prompt is not None else build_outline_prompt(
+                topic, reference_content, len(images or []),
+                options or {"organization": organization},
+                template=prompt_text or self.prompt_template,
+            )
             # 从配置中获取模型参数（provider_name 为空时使用当前激活服务商）
             provider_config = get_text_provider_config(provider_name, self.user_id)
             # 指定了服务商时按该服务商新建客户端，否则沿用初始化时的客户端
-            client = get_text_chat_client(provider_config) if provider_name else self.client
+            client = get_text_chat_client(provider_config) if provider_name else self.client or self._get_client()
 
             model = provider_config.get('model', 'gemini-2.0-flash-exp')
             temperature = provider_config.get('temperature', 1.0)
@@ -122,6 +128,8 @@ class OutlineService:
             max_output_tokens = provider_config.get('max_output_tokens', 4000)
 
             logger.info(f"调用文本生成 API: provider={provider_name or 'active'}, model={model}, temperature={temperature}")
+            if on_send:
+                on_send(prompt, model)
             outline_text = client.generate_text(
                 prompt=prompt,
                 model=model,
@@ -129,6 +137,9 @@ class OutlineService:
                 max_output_tokens=max_output_tokens,
                 images=images
             )
+            record_current({"event": "response", "phase": "outline", "status": "received",
+                            "model": model, "body": {"output_text": outline_text}},
+                           (provider_config.get("api_key"),))
 
             logger.debug(f"API 返回文本长度: {len(outline_text)} 字符")
 
@@ -137,72 +148,67 @@ class OutlineService:
                 logger.info("大纲生成已被用户取消")
                 return {"success": False, "cancelled": True, "error": "已取消"}
 
+            outline_text, generation_recommendation = extract_generation_recommendation(outline_text)
+            available_layouts = catalog_options("image", "layout")
+            available_styles = catalog_options("image", "style")
+            outline_text, tagged_growth = extract_growth_recommendation(
+                outline_text, available_layouts, available_styles
+            )
+            request_options = options or {}
+            platform = normalize_platform(request_options.get("platform"))
+            goal = normalize_goal(request_options.get("goal"))
+            nested_growth = normalize_growth_recommendation(
+                generation_recommendation.get("growth_recommendation"),
+                available_layouts,
+                available_styles,
+            ) if isinstance(generation_recommendation, dict) else None
+            growth_recommendation = (
+                tagged_growth
+                or nested_growth
+                or recommend_growth(
+                    topic,
+                    platform,
+                    goal,
+                    available_layouts,
+                    available_styles,
+                )
+            )
+            fallback = recommend_growth(topic, platform, goal, available_layouts, available_styles)
+            growth_recommendation["source"] = "model" if tagged_growth or nested_growth else "rules"
+            for key, selected in (("platform", platform), ("goal", goal)):
+                recommended = growth_recommendation.get(key)
+                growth_recommendation[key] = selected if selected != "auto" else (
+                    recommended if recommended not in (None, "auto") else fallback[key])
+            outline_text, recommendation = extract_recommendation(outline_text, topic)
+            outline_text, recommended_organization = extract_organization(outline_text)
             pages = self._parse_outline(outline_text)
+            validate_page_count(
+                pages,
+                (options or {}).get("page_count", "auto"),
+                (options or {}).get("content_form")
+                if (options or {}).get("_content_form_explicit", True) else None,
+            )
             logger.info(f"大纲解析完成，共 {len(pages)} 页")
 
             return {
                 "success": True,
                 "outline": outline_text,
                 "pages": pages,
+                "style_recommendation": recommendation,
+                "generation_recommendation": generation_recommendation,
+                "growth_recommendation": growth_recommendation,
+                "organization": organization if organization != "自动" else recommended_organization,
                 "has_images": images is not None and len(images) > 0
             }
 
         except Exception as e:
-            error_msg = str(e)
+            # Classify only the actual failure; generic advice changes keyword matching.
+            error_msg = sanitize(str(e), (provider_config.get("api_key"), prompt))
             logger.error(f"大纲生成失败: {error_msg}")
-
-            # 根据错误类型提供更详细的错误信息
-            if "api_key" in error_msg.lower() or "unauthorized" in error_msg.lower() or "401" in error_msg:
-                detailed_error = (
-                    f"API 认证失败。\n"
-                    f"错误详情: {error_msg}\n"
-                    "可能原因：\n"
-                    "1. API Key 无效或已过期\n"
-                    "2. API Key 没有访问该模型的权限\n"
-                    "解决方案：在系统设置页面检查并更新 API Key"
-                )
-            elif "model" in error_msg.lower() or "404" in error_msg:
-                detailed_error = (
-                    f"模型访问失败。\n"
-                    f"错误详情: {error_msg}\n"
-                    "可能原因：\n"
-                    "1. 模型名称不正确\n"
-                    "2. 没有访问该模型的权限\n"
-                    "解决方案：在系统设置页面检查模型名称配置"
-                )
-            elif "timeout" in error_msg.lower() or "连接" in error_msg:
-                detailed_error = (
-                    f"网络连接失败。\n"
-                    f"错误详情: {error_msg}\n"
-                    "可能原因：\n"
-                    "1. 网络连接不稳定\n"
-                    "2. API 服务暂时不可用\n"
-                    "3. Base URL 配置错误\n"
-                    "解决方案：检查网络连接，稍后重试"
-                )
-            elif "rate" in error_msg.lower() or "429" in error_msg or "quota" in error_msg.lower():
-                detailed_error = (
-                    f"API 配额限制。\n"
-                    f"错误详情: {error_msg}\n"
-                    "可能原因：\n"
-                    "1. API 调用次数超限\n"
-                    "2. 账户配额用尽\n"
-                    "解决方案：等待配额重置，或升级 API 套餐"
-                )
-            else:
-                detailed_error = (
-                    f"大纲生成失败。\n"
-                    f"错误详情: {error_msg}\n"
-                    "可能原因：\n"
-                    "1. Text API 配置错误或密钥无效\n"
-                    "2. 网络连接问题\n"
-                    "3. 模型无法访问或不存在\n"
-                    "建议：检查配置文件 text_providers.yaml"
-                )
 
             return {
                 "success": False,
-                "error": detailed_error
+                "error": error_msg
             }
 
 

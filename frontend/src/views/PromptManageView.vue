@@ -1,601 +1,219 @@
-<template>
-  <div class="container">
-    <div class="page-header">
-      <div>
-        <h1 class="page-title">提示词设计</h1>
-      </div>
-    </div>
-
-    <div v-if="error" class="error-banner">{{ error }}</div>
-
-    <!-- 类型切换 -->
-    <div class="kind-tabs">
-      <button
-        v-for="kind in kinds"
-        :key="kind"
-        class="kind-tab"
-        :class="{ active: activeKind === kind }"
-        @click="switchKind(kind)"
-      >
-        {{ kindLabels[kind] }}
-      </button>
-    </div>
-
-    <!-- 新建按钮 -->
-    <div class="toolbar">
-      <button class="btn btn-primary btn-small" @click="startCreate">+ 新建提示词</button>
-    </div>
-
-    <!-- 编辑面板 -->
-    <div v-if="editing" class="card editor-card">
-      <div class="editor-head">
-        <h3>{{ editing.isBase ? '编辑默认提示词' : (editing.originalName ? '编辑提示词' : '新建提示词') }}</h3>
-        <button class="icon-btn" title="关闭" @click="editing = null">✕</button>
-      </div>
-      <div class="editor-body">
-        <div class="field">
-          <label>提示词名称</label>
-          <input
-            v-model="editing.name"
-            class="input"
-            type="text"
-            maxlength="50"
-            placeholder="给这个提示词起个名字，如：电商风格"
-            :disabled="!!editing.isBase"
-            :title="editing.isBase ? '系统默认提示词名称不可修改' : ''"
-          />
-          <span v-if="editing.isBase" class="base-editor-tip">系统默认提示词，修改内容后对所有用户生效</span>
-        </div>
-        <div class="field">
-          <label>提示词内容</label>
-          <textarea
-            v-model="editing.content"
-            class="textarea"
-            rows="12"
-            placeholder="输入完整提示词内容"
-          ></textarea>
-        </div>
-        <div class="editor-actions">
-          <button class="btn btn-purple btn-small" :disabled="saving" @click="save">
-            {{ saving ? '保存中...' : '保存' }}
-          </button>
-          <button class="btn btn-ghost btn-small" @click="editing = null">取消</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 提示词列表 -->
-    <div class="prompt-list">
-      <div v-for="item in activePrompts" :key="item.name" class="card prompt-card">
-        <div class="prompt-head">
-          <span class="prompt-name">{{ item.name }}</span>
-          <span v-if="item.is_base" class="base-badge">系统默认</span>
-          <span v-else-if="item.is_shared" class="shared-badge">来自 {{ item.owner }}</span>
-          <span v-else class="mine-badge">我的</span>
-        </div>
-        <p class="prompt-preview" :class="{ expanded: expandedName === item.name }">
-          {{ item.content }}
-        </p>
-        <button
-          v-if="item.content.length > 120 || expandedName === item.name"
-          class="expand-btn"
-          @click="toggleExpand(item.name)"
-        >
-          {{ expandedName === item.name ? '收起' : '展开全文' }}
-        </button>
-
-        <!-- 管理员：查看共享名单 -->
-        <div v-if="isAdmin && item.is_shared" class="allowed-users">
-          <span class="allowed-label">可用用户：</span>
-          <span v-if="!item.allowed_users || item.allowed_users.length === 0" class="allowed-empty">仅拥有者（未共享）</span>
-          <span v-for="u in item.allowed_users" :key="u" class="allowed-chip">{{ u }}</span>
-        </div>
-
-        <div v-if="item.is_base" class="prompt-actions">
-          <template v-if="item.can_edit">
-            <button class="btn btn-info btn-small" @click="startEdit(item)">编辑</button>
-            <span class="base-tip">系统默认提示词，修改后对所有用户生效</span>
-          </template>
-          <span v-else class="base-tip">系统默认提示词，不可编辑</span>
-        </div>
-        <div v-else-if="item.can_edit" class="prompt-actions">
-          <button class="btn btn-info btn-small" @click="startEdit(item)">编辑</button>
-          <button v-if="isAdmin" class="btn btn-ghost btn-small" @click="openUsersModal(item)">配置用户</button>
-          <button class="btn btn-danger btn-small" @click="remove(item)">删除</button>
-        </div>
-        <div v-else-if="isAdmin" class="prompt-actions">
-          <button class="btn btn-ghost btn-small" @click="openUsersModal(item)">配置用户</button>
-          <button class="btn btn-danger btn-small" @click="remove(item)">删除</button>
-        </div>
-        <div v-else class="prompt-actions base-actions">
-          <span class="base-tip">共享提示词，仅拥有者可编辑</span>
-        </div>
-      </div>
-
-      <div v-if="!loading && activePrompts.length === 0" class="empty-tip">
-        该分类下还没有自定义提示词，点"新建提示词"开始创建。
-      </div>
-    </div>
-
-    <!-- 配置用户弹窗 -->
-    <div v-if="usersModalOpen" class="modal-overlay" @click.self="usersModalOpen = false">
-      <div class="modal card">
-        <div class="editor-head">
-          <h3>配置可用用户 - {{ usersModalItem?.name }}</h3>
-          <button class="icon-btn" title="关闭" @click="usersModalOpen = false">✕</button>
-        </div>
-        <div class="editor-body">
-          <p class="modal-sub">
-            勾选后，这些用户可在自己的提示词界面看到并使用该提示词。拥有者
-            <strong>{{ usersModalItem?.owner }}</strong> 已默认勾选、始终可见。
-          </p>
-          <div class="user-check-list">
-            <label v-for="u in adminUsers" :key="u.id" class="user-check">
-              <input type="checkbox" :value="u.username" v-model="usersModalSelected" :disabled="u.username === usersModalItem?.owner" />
-              {{ u.username }}
-              <span v-if="u.id === usersModalItem?.owner_id" class="owner-flag">（拥有者，始终可见）</span>
-            </label>
-          </div>
-          <div class="editor-actions">
-            <button class="btn btn-purple btn-small" :disabled="savingUsers" @click="saveUsersModal">
-              {{ savingUsers ? '保存中...' : '保存' }}
-            </button>
-            <button class="btn btn-ghost btn-small" @click="usersModalOpen = false">取消</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-</template>
-
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
-import {
-  getPrompts,
-  savePrompt,
-  saveBasePrompt,
-  deletePrompt,
-  setPromptUsers,
-  adminDeletePrompt,
-  type PromptItem,
-  type PromptKind
-} from '../api'
-import { listUsers } from '../api/auth'
-import { useAuthStore } from '../stores/auth'
+import { computed, nextTick, onMounted, ref } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
+import { Copy, Eye, History, Pencil, Plus, RefreshCw, Search, ShieldCheck, Users, Image, Sparkles, X } from 'lucide-vue-next'
+import LegacyPromptLibrary from '../components/prompts/LegacyPromptLibrary.vue'
+import PromptEntryEditor from '../components/prompts/PromptEntryEditor.vue'
+import PromptVersionHistory from '../components/prompts/PromptVersionHistory.vue'
+import ReorderControls from '../components/common/ReorderControls.vue'
+import { modules, usePromptCenter } from '../components/prompts/usePromptCenter'
+import type { PromptEntry } from '../api/promptCenter'
+import ImageAnalysisPanel from '../components/reference/ImageAnalysisPanel.vue'
+import { useCreationOptions } from '../composables/useCreationOptions'
+import { useGeneratorStore } from '../stores/generator'
+import { referenceAssetImageUrl } from '../api/referenceAssets'
+import { resolveStylePreview } from '../features/styles/samplePreview'
 
-const kinds: PromptKind[] = ['outline', 'content', 'image']
-
-const kindLabels: Record<PromptKind, string> = {
-  outline: '大纲提示词',
-  content: '文案提示词',
-  image: '图片提示词'
+const center = usePromptCenter()
+const {
+  auth, activeModule, category, categories, legacy, search, filtered, draft, readonly,
+  users, usersLoading, usersError, history, versions, historyLoading, busy, loading,
+  dirty, error, conflict, notice,
+} = center
+const visibility = { private: '仅自己', selected: '指定用户', public: '所有用户' }
+const layoutPreviews: Record<string, string> = {
+  封面: 'cover',
+  清单: 'list',
+  步骤: 'steps',
+  对比: 'compare',
+  分类: 'category',
+  关系: 'relation',
+  例子: 'example',
+  总结: 'summary',
 }
-
-const authStore = useAuthStore()
-const isAdmin = computed(() => authStore.isAdmin)
-
-const prompts = ref<Record<PromptKind, PromptItem[]> | null>(null)
-const activeKind = ref<PromptKind>('outline')
-const loading = ref(false)
-const saving = ref(false)
-const error = ref('')
-const expandedName = ref<string | null>(null)
-
-const editing = ref<{ originalName: string; name: string; content: string; isBase?: boolean } | null>(null)
-
-// 配置用户弹窗
-const usersModalOpen = ref(false)
-const usersModalItem = ref<PromptItem | null>(null)
-const usersModalSelected = ref<string[]>([])
-const adminUsers = ref<{ id: string; username: string }[]>([])
-const savingUsers = ref(false)
-
-const activePrompts = computed(() => prompts.value?.[activeKind.value] || [])
-
-async function loadPrompts() {
-  loading.value = true
-  error.value = ''
-  try {
-    const res = await getPrompts()
-    if (res.success && res.prompts) {
-      prompts.value = res.prompts
-    } else {
-      error.value = '加载提示词失败'
+const panelOpen = computed(() => !!draft.value || !!history.value)
+const imageAnalysisDialog = ref<HTMLDialogElement | null>(null)
+const previewDialog = ref<HTMLDialogElement | null>(null)
+const previewImage = ref('')
+const previewTitle = ref('')
+const previewCaption = ref('')
+const failedPreviews = ref<string[]>([])
+const generatorStore = useGeneratorStore()
+const { textModels, load: loadOptions } = useCreationOptions()
+const analysisModel = ref(generatorStore.outlineModelName)
+onBeforeRouteLeave(() => center.discard())
+onMounted(async () => {
+  await loadOptions()
+  if (!textModels.value.some(model => model.name === analysisModel.value)) {
+    analysisModel.value = generatorStore.outlineModelName
+  }
+})
+async function edit(entry?: PromptEntry) {
+  center.open(entry)
+  await nextTick()
+  document.querySelector('.entry-editor')?.scrollIntoView({ block: 'nearest' })
+}
+function preview(entry: PromptEntry): string {
+  if (failedPreviews.value.includes(entry.id)) return ''
+  if (entry.module === 'image' && entry.category === 'style') return stylePreview(entry).url
+  const referenceAssetId = entry.metadata?.reference_asset_id
+  if (typeof referenceAssetId === 'string' && referenceAssetId) return referenceAssetImageUrl(referenceAssetId)
+  const previewUrl = entry.metadata?.preview_url
+  if (typeof previewUrl === 'string' && /^(\/(?!\/)|https?:\/\/)/.test(previewUrl)) return previewUrl
+  if (entry.module === 'image' && entry.category === 'layout') {
+    const layoutId = typeof entry.metadata?.preview === 'string' ? entry.metadata.preview : layoutPreviews[entry.name]
+    if (layoutId) return `/assets/layouts/${layoutId}.png`
+  }
+  return ''
+}
+function stylePreview(entry: PromptEntry) {
+  return resolveStylePreview({ ...entry, legacyValue: entry.legacy_value || undefined })
+}
+function thumbnail(entry: PromptEntry) {
+  return entry.category === 'style' ? stylePreview(entry).thumbnail : preview(entry)
+}
+function summary(entry: PromptEntry): string {
+  if (entry.module === 'image' && entry.category === 'layout') {
+    const summaries: Record<string, string> = {
+      自动: '根据页面信息量自动选择清晰易读的排版。',
+      封面: '突出标题和一个视觉主体，适合开场页或主题介绍。',
+      清单: '用编号或短标签整齐排列多个要点，适合收藏型内容。',
+      步骤: '沿着明确顺序组织内容，适合教程、流程和操作说明。',
+      对比: '把两个或多个对象并排展示，方便比较差异。',
+      分类: '把内容按类别分组，适合知识整理和主题归纳。',
+      关系: '用中心主体、节点和连线表达关联关系。',
+      例子: '先突出一个具体示例，再配合解释帮助理解。',
+      总结: '集中呈现核心结论和行动提醒，减少装饰干扰。',
     }
-  } catch (e: any) {
-    error.value = '加载提示词失败：' + (e?.message || '未知错误')
-  } finally {
-    loading.value = false
+    return summaries[entry.name] || entry.description || '用于控制单页内容的排版方式。'
   }
-}
-
-function switchKind(kind: PromptKind) {
-  activeKind.value = kind
-  expandedName.value = null
-}
-
-function toggleExpand(name: string) {
-  expandedName.value = expandedName.value === name ? null : name
-}
-
-function startCreate() {
-  editing.value = { originalName: '', name: '', content: '' }
-}
-
-function startEdit(item: PromptItem) {
-  editing.value = {
-    originalName: item.name,
-    name: item.name,
-    content: item.content,
-    isBase: !!item.is_base
+  if (entry.module === 'image' && entry.category === 'style') {
+    const detail = typeof entry.metadata?.detail === 'string' ? entry.metadata.detail : ''
+    const scenes = typeof entry.metadata?.scenes === 'string' ? entry.metadata.scenes : ''
+    return [detail, scenes ? `适合：${scenes}` : ''].filter(Boolean).join('。') || entry.description || '用于控制图片的视觉表现方式。'
   }
+  return entry.description || '暂无说明'
 }
-
-async function save() {
-  if (!editing.value) return
-  const { originalName, name, content, isBase } = editing.value
-  if (!name.trim()) {
-    alert('请填写提示词名称')
-    return
-  }
-  if (!content.trim()) {
-    alert('请填写提示词内容')
-    return
-  }
-
-  saving.value = true
-  error.value = ''
-  try {
-    let res: any
-    if (isBase) {
-      // 系统默认提示词：管理员直接保存默认内容（名称不可修改）
-      res = await saveBasePrompt(activeKind.value, content)
-    } else {
-      // 重命名：先删旧的再存新的
-      if (originalName && originalName !== name) {
-        await deletePrompt(activeKind.value, originalName)
-      }
-      res = await savePrompt(activeKind.value, name.trim(), content)
-    }
-    if (!res?.success) {
-      error.value = res?.error_message || '保存失败'
-      return
-    }
-    editing.value = null
-    await loadPrompts()
-  } catch (e: any) {
-    error.value = '保存失败：' + (e?.message || '未知错误')
-  } finally {
-    saving.value = false
-  }
+function openPreview(entry: PromptEntry) {
+  const url = preview(entry)
+  if (!url) return
+  previewImage.value = url
+  previewTitle.value = `${entry.name}样图`
+  previewCaption.value = entry.category === 'style'
+    ? [stylePreview(entry).label, stylePreview(entry).detail].filter(Boolean).join(' · ') : '布局示意图'
+  previewDialog.value?.showModal()
 }
-
-async function remove(item: PromptItem) {
-  const target = item.is_shared ? `"${item.name}"（来自 ${item.owner}）` : `"${item.name}"`
-  if (!confirm(`确定要删除提示词${target}吗？`)) return
-  error.value = ''
-  try {
-    if (isAdmin.value && item.is_shared) {
-      // 管理员删除他人提示词
-      const res = await adminDeletePrompt(item.owner_id!, activeKind.value, item.name)
-      if (!res?.success) {
-        error.value = res?.error_message || '删除失败'
-        return
-      }
-    } else {
-      await deletePrompt(activeKind.value, item.name)
-    }
-    await loadPrompts()
-  } catch (e: any) {
-    error.value = '删除失败：' + (e?.message || '未知错误')
-  }
+function date(value?: string) {
+  if (!value) return '未记录'
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString('zh-CN', { hour12: false })
 }
-
-// ==================== 管理员：配置用户名单 ====================
-
-async function openUsersModal(item: PromptItem) {
-  usersModalItem.value = item
-  // 拥有者（创建者）默认打勾、始终可见
-  const selected = new Set<string>([...(item.allowed_users || [])])
-  if (item.owner) selected.add(item.owner)
-  usersModalSelected.value = [...selected]
-  usersModalOpen.value = true
-  if (adminUsers.value.length === 0) {
-    try {
-      const res = await listUsers()
-      if (res.success && res.users) {
-        adminUsers.value = res.users
-      }
-    } catch {
-      // 用户列表加载失败时保持空，弹窗内不展示可选用户
-    }
-  }
-}
-
-async function saveUsersModal() {
-  if (!usersModalItem.value) return
-  savingUsers.value = true
-  error.value = ''
-  try {
-    const res = await setPromptUsers(
-      usersModalItem.value.owner_id!,
-      activeKind.value,
-      usersModalItem.value.name,
-      usersModalSelected.value
-    )
-    if (res?.success) {
-      usersModalOpen.value = false
-      await loadPrompts()
-    } else {
-      error.value = res?.error_message || '保存失败'
-    }
-  } catch (e: any) {
-    error.value = '保存失败：' + (e?.message || '未知错误')
-  } finally {
-    savingUsers.value = false
-  }
-}
-
-onMounted(loadPrompts)
 </script>
 
+<template>
+  <main class="container prompt-center">
+    <header class="center-header"><h1>提示词管理中心</h1><span v-if="dirty" class="unsaved">未保存</span>
+      <div class="header-actions">
+        <button v-if="!legacy" type="button" class="icon" title="重新加载" aria-label="重新加载" :disabled="busy" @click="center.reload"><RefreshCw :size="18" /></button>
+        <button v-if="!legacy && activeModule === 'image'" type="button" class="secondary-action" :disabled="busy" @click="imageAnalysisDialog?.showModal()"><Sparkles :size="16" />从图片创建提示词</button>
+      </div>
+    </header>
+    <nav class="module-tabs" aria-label="生成模块">
+      <button v-for="module in modules" :key="module.id" type="button" :aria-pressed="!legacy && activeModule === module.id" :disabled="busy" @click="center.switchModule(module.id)">{{ module.name }}</button>
+      <button type="button" class="legacy-tab" :aria-pressed="legacy" :disabled="busy" @click="center.switchModule('legacy')">旧版模板</button>
+    </nav>
+    <KeepAlive><LegacyPromptLibrary v-if="legacy" /></KeepAlive>
+    <template v-if="!legacy">
+      <nav class="category-tabs" aria-label="提示词分类">
+        <button v-for="item in categories" :key="item.id" type="button" :aria-pressed="category === item.id" :disabled="busy" @click="center.switchCategory(item.id)">{{ item.name }}</button>
+      </nav>
+      <div v-if="error" class="message error" role="alert">{{ error }}<button v-if="conflict" type="button" :disabled="busy" @click="center.reload">重新加载最新版本</button></div>
+      <p v-if="notice" class="message success" role="status">{{ notice }}</p>
+      <div class="workbench" :class="{ 'has-panel': panelOpen }">
+        <section class="entries" aria-label="提示词条目" :aria-busy="loading">
+          <div class="toolbar">
+            <label class="search"><Search :size="17" /><input v-model="search" type="search" aria-label="搜索条目" placeholder="搜索名称、场景、来源" /></label>
+            <span class="count">{{ filtered.length }} 项</span>
+            <button v-if="category !== 'base'" type="button" class="primary" :disabled="busy || conflict" @click="edit()"><Plus :size="17" />新增</button>
+          </div>
+          <p v-if="loading && !filtered.length" class="empty" role="status">加载提示词中...</p>
+          <p v-else-if="!filtered.length" class="empty">{{ search ? '没有匹配的条目' : '暂无条目' }}</p>
+          <div data-reorder-list>
+            <article v-for="(entry, index) in filtered" :key="entry.id" class="entry" :data-reorder-id="entry.category === 'base' ? undefined : entry.id" :data-entry-id="entry.id">
+              <div class="entry-main">
+                <div v-if="entry.module === 'image' && (entry.category === 'layout' || entry.category === 'style')" class="style-preview">
+                  <button v-if="preview(entry)" type="button" class="preview-button" :aria-label="`放大查看${entry.name}样图`" @click="openPreview(entry)">
+                    <img :src="thumbnail(entry)" :alt="entry.name + ' 样图'" loading="lazy" @error="failedPreviews.push(entry.id)" />
+                  </button>
+                  <span v-else><Image :size="22" />{{ failedPreviews.includes(entry.id) ? '样图加载失败' : entry.category === 'style' ? stylePreview(entry).label : '暂无样图' }}</span>
+                </div>
+                <div class="entry-info">
+                  <div class="entry-title"><ShieldCheck v-if="entry.category === 'base'" :size="18" /><h2>{{ entry.name }}</h2><span class="revision">v{{ entry.revision }}</span></div>
+                  <p class="description">{{ summary(entry) }}</p>
+                  <p v-if="entry.category === 'style' && preview(entry)" class="sample-caption">{{ stylePreview(entry).label }}</p>
+                  <p v-else-if="entry.category === 'style' && stylePreview(entry).detail" class="sample-caption">{{ stylePreview(entry).detail }}</p>
+                  <div class="entry-meta"><span>{{ entry.builtin ? '内置' : entry.owner_name || '未知来源' }}</span><span>{{ visibility[entry.visibility] }}</span><span :class="entry.enabled ? 'enabled' : 'disabled'">{{ entry.enabled ? '已启用' : '已停用' }}</span></div>
+                  <time :datetime="entry.updated_at">{{ date(entry.updated_at) }}</time>
+                </div>
+              </div>
+              <div class="entry-actions">
+                <ReorderControls v-if="entry.category !== 'base'" :id="entry.id" :index="index" :total="filtered.length" :disabled="busy || conflict || !!search.trim()" @move="direction => center.step(index, direction)" @drop="target => center.move(entry.id, target)" />
+                <button type="button" class="icon" :title="center.editable(entry) ? '编辑' : '查看'" :aria-label="`${center.editable(entry) ? '编辑' : '查看'} ${entry.name}`" :disabled="busy" @click="edit(entry)"><Pencil v-if="center.editable(entry)" :size="17" /><Eye v-else :size="17" /></button>
+                <button v-if="entry.category !== 'base'" type="button" class="icon" title="复制" :aria-label="`复制 ${entry.name}`" :disabled="busy || conflict" @click="center.copy(entry)"><Copy :size="17" /></button>
+                <template v-if="center.editable(entry)">
+                  <button v-if="entry.category !== 'base'" type="button" class="icon" title="配置用户" :aria-label="`配置用户 ${entry.name}`" :disabled="busy || conflict" @click="edit(entry)"><Users :size="17" /></button>
+                  <button type="button" class="icon" title="版本记录" :aria-label="`版本记录 ${entry.name}`" :disabled="busy" @click="center.showHistory(entry)"><History :size="17" /></button>
+                  <label v-if="entry.category !== 'base'" class="toggle"><input type="checkbox" role="switch" :checked="entry.enabled" :aria-label="`启用 ${entry.name}`" :disabled="busy || conflict" @change="center.toggle(entry)" />启用</label>
+                </template>
+              </div>
+            </article>
+          </div>
+        </section>
+        <PromptEntryEditor v-if="draft" :draft="draft" :readonly="readonly" :admin="auth.isAdmin" :busy="busy || conflict" :users="users" :users-loading="usersLoading" :users-error="usersError" @change="draft = $event" @save="center.save" @close="center.discard" @users="center.loadUsers" />
+        <PromptVersionHistory v-else-if="history" :entry="history" :versions="versions" :busy="busy || conflict" :loading="historyLoading" @close="center.discard" @restore="version => history && center.restore(history, version)" />
+      </div>
+    </template>
+    <dialog ref="imageAnalysisDialog" class="image-analysis-dialog">
+      <ImageAnalysisPanel
+        context="prompt-center"
+        :models="textModels"
+        :model="analysisModel"
+        @update:model="analysisModel = $event"
+        @close="imageAnalysisDialog?.close()"
+        @saved="center.reload(); imageAnalysisDialog?.close()"
+      />
+    </dialog>
+    <dialog ref="previewDialog" class="preview-dialog" aria-label="样图预览">
+      <header><h2>{{ previewTitle }}</h2><button type="button" class="icon" aria-label="关闭样图预览" title="关闭" @click="previewDialog?.close()"><X :size="19" /></button></header>
+      <p class="sample-caption">{{ previewCaption }}</p>
+      <img v-if="previewImage" :src="previewImage" :alt="previewTitle" />
+    </dialog>
+  </main>
+</template>
+
 <style scoped>
-.kind-tabs {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-}
-.kind-tab {
-  padding: 8px 18px;
-  border: 1px solid var(--border-color);
-  background: #fff;
-  border-radius: 20px;
-  cursor: pointer;
-  font-size: 14px;
-  color: var(--text-sub);
-  transition: all 0.2s;
-}
-.kind-tab:hover {
-  border-color: var(--primary);
-  color: var(--primary);
-}
-.kind-tab.active {
-  background: var(--primary);
-  border-color: var(--primary);
-  color: #fff;
-  font-weight: 600;
-}
-.toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 20px;
-  flex-wrap: wrap;
-}
-.placeholder-hint {
-  font-size: 12px;
-  color: var(--text-sub);
-}
-.placeholder-hint code {
-  margin-right: 6px;
-  padding: 2px 6px;
-  background: #f0f0f0;
-  border-radius: 4px;
-  color: var(--primary);
-}
-.editor-card {
-  margin-bottom: 20px;
-  border: 2px solid var(--primary);
-}
-.editor-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border-color);
-}
-.editor-head h3 {
-  margin: 0;
-  font-size: 16px;
-}
-.icon-btn {
-  border: none;
-  background: none;
-  cursor: pointer;
-  font-size: 16px;
-  color: var(--text-sub);
-}
-.editor-body {
-  padding: 20px;
-}
-.field {
-  margin-bottom: 16px;
-}
-.field label {
-  display: block;
-  margin-bottom: 6px;
-  font-size: 14px;
-  font-weight: 600;
-}
-.field .input:disabled {
-  background: #f5f5f5;
-  color: #999;
-  cursor: not-allowed;
-}
-.base-editor-tip {
-  display: block;
-  margin-top: 6px;
-  font-size: 12px;
-  color: #b45309;
-}
-.input {
-  width: 100%;
-  padding: 8px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  font-size: 14px;
-  box-sizing: border-box;
-}
-.textarea {
-  width: 100%;
-  padding: 10px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  font-size: 13px;
-  line-height: 1.6;
-  font-family: inherit;
-  box-sizing: border-box;
-  resize: vertical;
-}
-.editor-actions {
-  display: flex;
-  gap: 10px;
-}
-.prompt-list {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-.prompt-card {
-  padding: 16px 20px;
-}
-.prompt-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 8px;
-  flex-wrap: wrap;
-}
-.prompt-name {
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--text-main);
-}
-.base-badge {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  background: #F0F0F0;
-  color: #666;
-}
-.mine-badge {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  background: #E8F5E9;
-  color: #2E7D32;
-}
-.shared-badge {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  background: #E3F2FD;
-  color: #1565C0;
-}
-.prompt-preview {
-  margin: 0 0 6px;
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--text-sub);
-  white-space: pre-wrap;
-  word-break: break-word;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.prompt-preview.expanded {
-  display: block;
-}
-.expand-btn {
-  border: none;
-  background: none;
-  color: var(--primary);
-  font-size: 12px;
-  cursor: pointer;
-  padding: 0;
-  margin-bottom: 10px;
-}
-.prompt-actions {
-  display: flex;
-  gap: 10px;
-  margin-top: 10px;
-}
-.base-actions .base-tip {
-  font-size: 12px;
-  color: #999;
-}
-.empty-tip {
-  text-align: center;
-  padding: 40px;
-  color: #999;
-  font-size: 14px;
-}
-.allowed-users {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin-top: 10px;
-  font-size: 12px;
-}
-.allowed-label {
-  color: #666;
-}
-.allowed-chip {
-  padding: 2px 10px;
-  border-radius: 12px;
-  background: #E8F5E9;
-  color: #2E7D32;
-  font-weight: 600;
-}
-.allowed-empty {
-  color: #999;
-}
-/* 配置用户弹窗 */
-.modal {
-  width: 420px;
-  max-width: 92vw;
-  max-height: 80vh;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.modal .editor-body {
-  overflow: auto;
-}
-.modal-sub {
-  font-size: 13px;
-  color: #555;
-  margin: 0 0 14px;
-}
-.user-check-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 16px;
-}
-.user-check {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  font-size: 14px;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-.user-check:hover {
-  background: #F7F9FC;
-}
-.user-check input {
-  margin: 0;
-}
-.owner-flag {
-  font-size: 12px;
-  color: #999;
-}
+.prompt-center { color:#252c32; }
+.center-header { display:flex; align-items:center; gap:12px; margin-bottom:20px; } h1 { font-size:24px; line-height:1.4; overflow-wrap:anywhere; } .header-actions { margin-left:auto; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.image-analysis-dialog { width:min(900px,calc(100% - 24px)); max-height:calc(100dvh - 32px); overflow:auto; padding:0; border:0; background:transparent; } .image-analysis-dialog::backdrop { background:#151d3266; }
+.preview-dialog { width:min(860px,calc(100% - 24px)); max-width:none; max-height:calc(100dvh - 32px); padding:16px; border:1px solid #cfd6dc; border-radius:8px; background:#fff; } .preview-dialog::backdrop { background:#151d3266; }
+.preview-dialog header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; } .preview-dialog header h2 { margin:0; font-size:18px; }
+.preview-dialog>img { display:block; width:100%; max-height:calc(100dvh - 120px); object-fit:contain; background:#f4f6f7; }
+button { display:inline-flex; align-items:center; justify-content:center; gap:6px; border:1px solid #bdc5cc; border-radius:4px; background:white; min-height:36px; padding:6px 12px; cursor:pointer; }
+button:hover:not(:disabled) { background:#f0f4f3; } button:disabled { opacity:.5; cursor:default; } button.primary { color:white; background:#176b55; border-color:#176b55; }
+button.icon { width:36px; flex-shrink:0; padding:0; }
+.module-tabs { display:flex; flex-wrap:wrap; gap:4px; border-bottom:1px solid #ccd3d8; margin-bottom:16px; } .module-tabs button { border:0; border-bottom:3px solid transparent; border-radius:0; background:transparent; padding:10px 16px; }
+.module-tabs button[aria-pressed=true] { border-bottom-color:#176b55; color:#125441; font-weight:600; } .legacy-tab { margin-left:auto; }
+.category-tabs { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:20px; } .category-tabs button { border:0; background:transparent; } .category-tabs button[aria-pressed=true] { background:#e5efe9; color:#125441; font-weight:600; }
+.workbench { display:grid; grid-template-columns:minmax(0,1fr); gap:24px; align-items:start; } .workbench.has-panel { grid-template-columns:minmax(0,1fr) minmax(340px,.9fr); } .entries { min-width:0; }
+.toolbar { display:flex; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap; } .search { display:flex; align-items:center; gap:8px; border:1px solid #bdc5cc; border-radius:4px; padding:0 10px; flex:1; min-width:140px; background:white; }
+.search input { border:0; outline-offset:0; background:transparent; width:100%; min-width:0; padding:8px 0; font-size:14px; } .count { font-size:13px; color:#59636b; white-space:nowrap; }
+.entry { border-top:1px solid #dce0e3; padding:16px 0; } .entry:last-child { border-bottom:1px solid #dce0e3; } .entry-main { display:flex; gap:12px; } .entry-info { min-width:0; flex:1; } .entry-title { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+h2 { font-size:16px; overflow-wrap:anywhere; line-height:1.5; } .revision { color:#59636b; font-size:12px; } .description { font-size:14px; color:#59636b; overflow-wrap:anywhere; margin:4px 0; }
+.entry-meta { display:flex; gap:12px; flex-wrap:wrap; font-size:12px; } .enabled { color:#176b55; } .disabled { color:#8e493a; } time { color:#59636b; font-size:12px; } .entry-actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:12px; }
+.toggle { display:flex; align-items:center; gap:6px; font-size:13px; min-height:36px; margin-left:auto; } .empty { padding:40px 0; text-align:center; color:#59636b; }
+.message { margin-bottom:16px; padding:12px; border-left:3px solid; overflow-wrap:anywhere; } .message button { margin-left:12px; } .error { background:#fff0ef; border-color:#b33930; color:#86231c; } .success { background:#edf7f0; border-color:#176b55; } .unsaved { color:#8e493a; font-size:13px; }
+.style-preview { flex-shrink:0; width:128px; height:168px; background:#eef1f3; overflow:hidden; border-radius:4px; } .preview-button { display:block; width:100%; height:100%; padding:0; border:0; background:transparent; cursor:zoom-in; } .preview-button img { width:100%; height:100%; object-fit:contain; } .style-preview span { display:flex; height:100%; flex-direction:column; align-items:center; justify-content:center; gap:4px; font-size:11px; color:#59636b; }
+.sample-caption { font-size:12px; line-height:1.5; color:#59636b; margin:8px 0; overflow-wrap:anywhere; }
+@media(max-width:1000px) { .workbench.has-panel { grid-template-columns:minmax(0,1fr); } .has-panel > .entries { order:2; } }
+@media(max-width:700px) { button, button.icon, .toggle { min-height:44px; } button.icon { width:44px; } .module-tabs button { padding:8px 10px; } .legacy-tab { margin-left:0; } .search input { font-size:16px; } h1 { font-size:22px; } .entry-actions :deep(.reorder-controls) { margin-right:auto; } }
 </style>

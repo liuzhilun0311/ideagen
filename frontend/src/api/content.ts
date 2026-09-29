@@ -7,10 +7,14 @@ export async function generateContent(
   outline: string,
   promptName?: string,
   signal?: AbortSignal,
-  providerName?: string
+  providerName?: string,
+  generationPreferences?: import('../features/generationOptions').OutlinePreferences,
+  copyPreferences?: import('../features/copyOptions').CopyPreferences,
 ): Promise<ContentResponse> {
   const response = await axios.post<ContentResponse>(`${API_BASE_URL}/content`, {
     topic,
+    generation_preferences: generationPreferences,
+    copy_preferences: copyPreferences,
     outline,
     prompt_name: promptName || '',
     provider_name: providerName || ''

@@ -58,22 +58,26 @@ def save_base_prompt(request):
 
 @require_auth
 def save_prompt(request):
-    """保存提示词（kind/name/content，按名称覆盖）。"""
+    """保存提示词；可选 original_name 将已有条目原位重命名。"""
     try:
         data = json_body(request) or {}
         kind = (data.get('kind') or '').strip()
         name = (data.get('name') or '').strip()
         content = data.get('content') or ''
         try:
-            services.save_prompt(request.user_id, kind, name, content)
+            services.save_prompt(
+                request.user_id, kind, name, content,
+                original_name=data.get('original_name'),
+            )
         except ValueError as ve:
             return api_error_response(
                 validation_error(str(ve)),
                 context={"endpoint": "/api/prompts/save"},
             )
         return JsonResponse({"success": True, "message": "提示词已保存"}, status=200)
-    except Exception as e:
-        return api_error_response(e, context={"endpoint": "/api/prompts/save"})
+    except Exception:
+        logger.error("Prompt save failed; no prompt data logged.")
+        return api_error_response("提示词保存失败，请重试", status=500)
 
 
 @require_auth

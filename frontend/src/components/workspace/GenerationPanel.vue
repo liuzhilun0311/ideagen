@@ -7,10 +7,11 @@ import ImageStylePicker from './ImageStylePicker.vue'
 import OutlineOptions from './OutlineOptions.vue'
 import CopyOptions from './CopyOptions.vue'
 import OutlinePromptInspector from './OutlinePromptInspector.vue'
+import GenerationGuide from './GenerationGuide.vue'
 const props = defineProps<{
   mode: 'images' | 'copy'
   textModels: { name: string; label: string }[]
-  imageModels: { name: string; label: string }[]
+  imageModels: { name: string; label: string; model?: string; type?: string }[]
   prompts: { outline: PromptItem[]; image: PromptItem[]; content: PromptItem[] }
   busy: boolean
   phase: string | null
@@ -19,22 +20,26 @@ defineEmits<{ run: [kind: 'outline'] }>()
 const store = useGeneratorStore()
 const groups = [
   { key: 'images' as const, label: '图片生成', icon: Image, model: 'imageModelName' as const, prompt: 'imagePromptName' as const, kind: 'image' as const },
-  { key: 'content' as const, label: '发布文案', icon: FileText, model: 'contentModelName' as const, prompt: 'contentPromptName' as const, kind: 'content' as const },
+  { key: 'content' as const, label: '文案制作', icon: FileText, model: 'contentModelName' as const, prompt: 'contentPromptName' as const, kind: 'content' as const },
 ]
 const visibleGroups = computed(() => groups.filter(group => group.key === (props.mode === 'copy' ? 'content' : 'images')))
 const outlineLocked = computed(() => props.busy || store.images.length > 0)
+const qualitySupported = computed(() => {
+  const selected = props.imageModels.find(model => model.name === store.imageModelName)
+  return !selected?.model || selected.model.startsWith('gpt-image-')
+})
 </script>
 
 <template>
   <aside class="generation-panel" aria-label="生成设置">
-    <div class="panel-intro"><strong>{{ mode === 'images' ? '图片参数' : '文案参数' }}</strong><span>调整后仅影响下一次生成</span></div>
+    <div class="panel-intro"><div class="panel-title"><strong>{{ mode === 'images' ? '图片参数' : '文案参数' }}</strong><GenerationGuide :kind="mode" /></div><span>调整后仅影响下一次生成</span></div>
     <section v-if="mode === 'images'" class="image-settings-section">
       <ImageStylePicker id="workspace" :disabled="busy" />
       <div class="image-parameters">
         <fieldset class="parameter-grid" :disabled="busy">
-          <label>分辨率<select v-model="store.imageResolution" class="field"><option>AUTO</option><option>1K</option><option>2K</option><option>4K</option></select></label>
+          <label>分辨率<select v-model="store.imageResolution" class="field"><option value="AUTO">默认（1K）</option><option>1K</option><option>2K</option><option>4K</option></select></label>
           <label>宽高比<select v-model="store.imageAspectRatio" class="field"><option>1:1</option><option>16:9</option><option>9:16</option><option>3:2</option><option>2:3</option><option>4:3</option><option>3:4</option></select></label>
-          <label>质量<select v-model="store.imageQuality" class="field"><option value="auto">自动</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option><option value="ultra">超高</option><option value="highest">最高</option></select></label>
+          <label>质量<select v-model="store.imageQuality" class="field"><option value="auto">接口默认</option><option value="low">{{ qualitySupported ? '低' : '旧版默认' }}</option><option value="medium" :disabled="!qualitySupported">中</option><option value="high" :disabled="!qualitySupported">高</option><option value="ultra" :disabled="!qualitySupported">超高</option><option value="highest" :disabled="!qualitySupported">最高</option></select></label>
           <label>输出格式<select v-model="store.imageOutputFormat" class="field"><option value="png">PNG</option><option value="jpeg">JPEG</option><option value="webp">WebP</option></select></label>
         </fieldset>
       </div>
@@ -82,6 +87,8 @@ const outlineLocked = computed(() => props.busy || store.images.length > 0)
 .generation-panel { min-width:0; padding:0; background:#fff; }
 .panel-intro { display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin-bottom:12px; }
 .panel-intro strong { font-size:13px; }
+.panel-title { display:flex; align-items:center; gap:4px; }
+.panel-intro { flex-wrap:wrap; }
 .panel-intro span { color:var(--text-sub); font-size:11px; }
 .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
 .image-settings-section { display:grid; gap:12px; padding-bottom:18px; border-bottom:1px solid var(--border-color); }

@@ -28,9 +28,20 @@ it('creates and updates a snapshot before marking saved', async () => {
   expect(store.recordId).toBe('record')
   expect(updateHistory).toHaveBeenCalledWith('record', expect.objectContaining({
     title: 'City walk',
-    outline: { raw: 'cover', pages: [{ index: 0, type: 'cover', content: 'cover' }] },
+    outline: expect.objectContaining({ raw: 'cover', pages: [{ index: 0, type: 'cover', content: 'cover' }],
+      creation_inputs: expect.objectContaining({ version: 1, reference_roles: [] }) }),
   }))
   expect(saver.dirty.value).toBe(false)
+})
+
+it.each(['loading', 'missing'])('does not save a work with %s reference images', async state => {
+  if (state === 'loading') useStudioSession().referenceLoading = true
+  else useGeneratorStore().referenceImageKey = 'unrestored'
+  const saver = useDraftSave()
+  expect(await saver.save()).toBe(false)
+  expect(saver.error.value?.detail).toContain('尚未恢复')
+  expect(createHistory).not.toHaveBeenCalled()
+  expect(updateHistory).not.toHaveBeenCalled()
 })
 
 it('does not update when creation fails', async () => {
@@ -40,6 +51,19 @@ it('does not update when creation fails', async () => {
   expect(updateHistory).not.toHaveBeenCalled()
   expect(saver.dirty.value).toBe(true)
   expect(saver.error.value?.detail).toBe('offline')
+})
+
+it('saves copy options with the work and marks option changes dirty', async () => {
+  const store = useGeneratorStore()
+  store.outline.copy_preferences = { style: '简洁干货', structure: '要点清单', length: '简短', emoji_level: '克制' }
+  const saver = useDraftSave()
+  expect(await saver.save()).toBe(true)
+  expect(updateHistory).toHaveBeenCalledWith('record', expect.objectContaining({
+    outline: expect.objectContaining({ copy_preferences: store.outline.copy_preferences }),
+  }))
+  expect(saver.dirty.value).toBe(false)
+  store.outline.copy_preferences = { ...store.outline.copy_preferences, length: '详细' }
+  expect(saver.dirty.value).toBe(true)
 })
 
 it('does not mark failed updates as saved', async () => {

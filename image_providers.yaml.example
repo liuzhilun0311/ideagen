@@ -1,0 +1,19 @@
+# 图片生成服务商配置【模板】
+# 使用方法：
+#   1. cp image_providers.yaml.example image_providers.yaml
+#   2. 编辑 image_providers.yaml，把下面的占位内容替换为真实服务商与 API Key
+# 注意：image_providers.yaml 含敏感密钥，已被 .gitignore / .dockerignore 排除，不会提交或打进镜像
+active_provider: 火山方舟示例
+providers:
+  火山方舟示例:
+    allowed_users:
+    - admin
+    api_key: 在此填入你的API_KEY
+    base_url: https://ark.cn-beijing.volces.com/api/v3/
+    display_name: 火山方舟:doubao-seedream-5-0-pro
+    endpoint_type: images/generations
+    high_concurrency: false
+    model: doubao-seedream-5-0-pro
+    remark: ''
+    short_prompt: false
+    type: image_api

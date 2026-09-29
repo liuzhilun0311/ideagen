@@ -1,0 +1,8 @@
+[
+  {"id":"mono","name":"黑白极简","primary":"#202020","background":"#FFFFFF","accent":"#666666"},
+  {"id":"blue","name":"蓝白清爽","primary":"#194B8C","background":"#F4F8FF","accent":"#19A7A0"},
+  {"id":"lavender","name":"浅紫柔和","primary":"#30204F","background":"#F0EAFE","accent":"#9575CD"},
+  {"id":"green","name":"绿白自然","primary":"#245C43","background":"#F3FAF5","accent":"#D3AD35"},
+  {"id":"yellow","name":"暖黄活力","primary":"#302D23","background":"#FFF9E7","accent":"#EDBC25"},
+  {"id":"red","name":"红黑醒目","primary":"#222222","background":"#FFF5F3","accent":"#D93737"}
+]

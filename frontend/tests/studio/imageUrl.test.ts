@@ -62,6 +62,8 @@ describe('image authentication boundary', () => {
     'https://studio.example/api/images/task/0.png',
     '//studio.example/api/images/task/0.png',
     './api/images/task/0.png',
+    '/api/postprocessing/images/result-id.png',
+    '/api/image-candidates/work-id/candidate-id/image',
   ])('accepts same-origin image endpoint: %s', url => {
     expect(isAuthenticatedImageUrl(url, base)).toBe(true)
   })
@@ -72,6 +74,12 @@ describe('image authentication boundary', () => {
     '/api/images/../../other.png',
     '/assets/photo.png',
     '/api/deai/images/task/0.png',
+    '/api/postprocessing/images-other/result.png',
+    '/api/postprocessing/images/../../other.png',
+    '/api/image-candidates/work-id',
+    '/api/image-candidates/work-id/candidate-id/adopt',
+    '/api/image-candidates/work-id/candidate-id/image/other',
+    'https://cdn.example/api/image-candidates/work-id/candidate-id/image',
     'https://user:password@studio.example/api/images/task/0.png',
   ])('does not authenticate other paths or credentialed URLs: %s', url => {
     expect(isAuthenticatedImageUrl(url, base)).toBe(false)
@@ -80,6 +88,18 @@ describe('image authentication boundary', () => {
 })
 
 describe('withToken compatibility', () => {
+  it('authenticates candidate previews through the actual image wrapper', () => {
+    vi.stubGlobal('window', { location: { href: base } })
+    setToken(token)
+    const url = '/api/image-candidates/work-id/candidate-id/image'
+    expect(withToken(url)).toBe(`${url}?token=${encodeURIComponent(token)}`)
+  })
+  it('authenticates processed images without losing their revision', () => {
+    const url = '/api/postprocessing/images/result.png?v=3'
+    expect(withImageToken(url, token, base)).toContain('&token=')
+    expect(new URL(getOriginalImageUrl(url, token, base)).searchParams.get('v')).toBe('3')
+    expect(new URL(getOriginalImageUrl(url, token, base)).searchParams.get('token')).toBe(token)
+  })
   it('preserves relative paths, query encoding and fragment position', () => {
     vi.stubGlobal('window', { location: { href: base } })
     setToken(token)

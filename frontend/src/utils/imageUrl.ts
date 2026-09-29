@@ -17,13 +17,19 @@ function sameOriginUrl(source: string, baseUrl: string): URL | null {
 
 /** Only the application's image endpoint may receive a session token. */
 export function isAuthenticatedImageUrl(source: string, baseUrl = browserBaseUrl()): boolean {
-  return sameOriginUrl(source, baseUrl)?.pathname.startsWith('/api/images/') ?? false
+  const path = sameOriginUrl(source, baseUrl)?.pathname
+  return !!path && (
+    path.startsWith('/api/images/') ||
+    path.startsWith('/api/postprocessing/images/') ||
+    path.startsWith('/api/reference-assets/images/') ||
+    /^\/api\/image-candidates\/[^/]+\/[^/]+\/image$/.test(path)
+  )
 }
 
 /** Validate with URL, but retain the server's relative path and query encoding. */
 export function withImageToken(source: string, token: string, baseUrl = browserBaseUrl()): string {
   const url = sameOriginUrl(source, baseUrl)
-  if (!token || !url?.pathname.startsWith('/api/images/') || url.searchParams.has('token')) return source
+  if (!token || !url || !isAuthenticatedImageUrl(source, baseUrl) || url.searchParams.has('token')) return source
   const hashIndex = source.indexOf('#')
   const path = hashIndex < 0 ? source : source.slice(0, hashIndex)
   const hash = hashIndex < 0 ? '' : source.slice(hashIndex)
@@ -36,6 +42,6 @@ export function getOriginalImageUrl(source: string, token: string, baseUrl = bro
   const url = sameOriginUrl(source, baseUrl)
   if (!url) return source
   url.searchParams.set('thumbnail', 'false')
-  if (token && url.pathname.startsWith('/api/images/')) url.searchParams.set('token', token)
+  if (token && isAuthenticatedImageUrl(source, baseUrl)) url.searchParams.set('token', token)
   return url.href
 }

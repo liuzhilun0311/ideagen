@@ -81,6 +81,16 @@ class ImageApiGenerator(ImageGeneratorBase):
         if model is None:
             model = self.model
 
+        from .gpt_images import GptImagesClient, validate_image_endpoint
+        validate_image_endpoint(self.endpoint_type)
+        if model.startswith('gpt-image-'):
+            references = list(reference_images or [])
+            if reference_image and reference_image not in references:
+                references.append(reference_image)
+            return GptImagesClient(self.config).generate_image(
+                prompt, aspect_ratio=aspect_ratio, model=model, reference_images=references,
+            )
+
         logger.info(f"Image API 生成图片: model={model}, aspect_ratio={aspect_ratio}, endpoint={self.endpoint_type}")
 
         # 根据端点类型选择不同的生成方式
@@ -104,12 +114,8 @@ class ImageApiGenerator(ImageGeneratorBase):
         }
 
         # =====================【修改开始】尺寸别名映射 =====================
-        size_map = {
-            "1K": "1024x1024",
-            "2K": "1280x1707",
-            "4K": "1024x1792"
-        }
-        sf_image_size = size_map.get(self.image_size, "1024x1024")
+        from .gpt_images import image_size
+        sf_image_size = image_size(aspect_ratio, self.image_size)
 
         payload = {
             "model": model,
@@ -140,17 +146,7 @@ class ImageApiGenerator(ImageGeneratorBase):
 
             payload["image"] = image_uris
 
-            ref_count = len(all_reference_images)
-            enhanced_prompt = f"""参考提供的 {ref_count} 张图片的风格（色彩、光影、构图、氛围），生成一张新图片。
-
-新图片内容：{payload['prompt']}
-
-要求：
-1. 保持相似的色调和氛围
-2. 使用相似的光影处理
-3. 保持一致的画面质感
-4. 如果参考图中有人物或产品，可以适当融入"""
-            payload["prompt"] = enhanced_prompt
+            # Visual precedence belongs to the composed prompt, not this transport adapter.
 
         return self.client.generate_via_images(payload)
 

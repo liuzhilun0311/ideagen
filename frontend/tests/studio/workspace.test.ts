@@ -22,7 +22,7 @@ vi.mock('../../src/api', () => ({
   getConfig: vi.fn(), getPrompts: vi.fn(),
 }))
 vi.mock('../../src/api/history', () => ({
-  createHistory: vi.fn(), updateHistory: vi.fn(),
+  createHistory: vi.fn(), updateHistory: vi.fn(), getHistory: vi.fn(),
 }))
 vi.mock('../../src/composables/useStudio', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/composables/useStudio')>()
@@ -37,9 +37,9 @@ import { useGeneratorStore } from '../../src/stores/generator'
 import { useStudioSession } from '../../src/stores/studioSession'
 import { setToken } from '../../src/api/token'
 import { generateContent, getConfig, getPrompts, type ContentResponse } from '../../src/api'
-import { createHistory, updateHistory } from '../../src/api/history'
+import { createHistory, updateHistory, getHistory } from '../../src/api/history'
 import { getProcessingState } from '../../src/api/postprocessing'
-import { listCandidates, generateCandidate } from '../../src/api/candidates'
+import { listCandidates, generateCandidate, adoptCandidate, type ImageCandidate } from '../../src/api/candidates'
 
 // A minimal Vue host exercises actual component lifetimes and handlers without a browser dependency.
 class HostNode {
@@ -143,22 +143,133 @@ beforeEach(() => {
 })
 afterEach(() => { unmount?.(); unmount = undefined; vi.unstubAllGlobals() })
 
+it('keeps original pages and images when the structure transaction fails', async () => {
+  const store = useGeneratorStore()
+  store.recordId = 'record'
+  store.taskId = 'old-task'
+  store.images = [{ index: 0, url: '/old.png', status: 'done' }]
+  const original = JSON.stringify(store.outline)
+  vi.mocked(getHistory).mockResolvedValue({
+    success: true, record: { id: 'record', outline: JSON.parse(original) } as any,
+  })
+  vi.mocked(updateHistory).mockImplementation(async (_id, payload) =>
+    payload.structure_change ? { success: false, error: 'Conflict' } : { success: true })
+  await mount('/workspace')
+  byLabel('下移页面').props.onClick()
+  await vi.waitFor(() => expect(text(root)).toContain('Conflict'))
+  expect(JSON.stringify(store.outline)).toBe(original)
+  expect(store.images[0]?.url).toBe('/old.png')
+  expect(store.taskId).toBe('old-task')
+  expect(useStudioSession().structureBusy).toBe(false)
+})
+
+it('saves new structure once, then detaches old images only on success', async () => {
+  const store = useGeneratorStore()
+  store.recordId = 'record'
+  store.taskId = 'old-task'
+  store.images = [{ index: 0, url: '/old.png', status: 'done' }]
+  vi.mocked(getHistory).mockResolvedValue({
+    success: true, record: { id: 'record', outline: JSON.parse(JSON.stringify(store.outline)) } as any,
+  })
+  let finish!: (value: { success: boolean }) => void
+  vi.mocked(updateHistory).mockImplementation(async (_id, payload) =>
+    payload.structure_change ? new Promise(resolve => { finish = resolve }) : { success: true })
+  await mount('/workspace')
+  const click = byLabel('下移页面').props.onClick
+  click()
+  await vi.waitFor(() => expect(finish).toBeTypeOf('function'))
+  click()
+  expect(store.images).toHaveLength(1)
+  expect(store.outline.pages[0]?.content).toBe('Cover')
+  finish({ success: true })
+  await vi.waitFor(() => expect(store.taskId).toBeNull())
+  expect(store.outline.pages.map(page => page.content)).toEqual(['Second page', 'Cover'])
+  expect(store.images).toEqual([])
+  expect(vi.mocked(updateHistory).mock.calls.filter(([, payload]) => payload.structure_change)).toHaveLength(1)
+})
+
+it('copies each title independently and publishes only the selected title', async () => {
+  const store = useGeneratorStore()
+  store.setContent(['First', 'Second'], 'Body', ['tag'])
+  const writeText = vi.fn().mockResolvedValue(undefined)
+  vi.stubGlobal('navigator', { clipboard: { writeText } })
+  await mount('/workspace/copy')
+  expect(store.content.selectedTitleIndex).toBe(0)
+  byLabel('采用标题 2').props['onUpdate:modelValue'](1)
+  await nextTick()
+  await byLabel('复制全部文案').props.onClick()
+  expect(writeText).toHaveBeenLastCalledWith('Second\n\nBody\n\n#tag')
+  await byLabel('复制标题 1').props.onClick()
+  expect(writeText).toHaveBeenLastCalledWith('First')
+  expect(store.content.selectedTitleIndex).toBe(1)
+})
+
+it('reuses the primary action slot for stopping a batch instead of adding another toolbar row', async () => {
+  let finish!: (value: ImageCandidate) => void
+  vi.mocked(generateCandidate).mockReturnValue(new Promise(resolve => { finish = resolve }))
+  const candidate: ImageCandidate = {
+    id: 'generated', index: 0, style: { preset: 'infographic', notes: '' }, prompt: '',
+    provider: 'image', status: 'ready', image_url: '/generated.png',
+    adopted: true, stale: false, created_at: '',
+  }
+  vi.mocked(adoptCandidate).mockResolvedValue({ task_id: 'task', image_url: '/generated.png', candidate })
+  await mount('/workspace')
+  const pending = find(node => node.tagName === 'BUTTON' && text(node).startsWith('生成剩余')).props.onClick()
+  await vi.waitFor(() => expect(generateCandidate).toHaveBeenCalledOnce())
+  const stop = byLabel('停止后续生成')
+  expect(stop.props.class).toContain('image-action')
+  expect(nodes().filter(node => node.tagName === 'BUTTON' && text(node).startsWith('生成剩余'))).toHaveLength(0)
+  stop.props.onClick()
+  await nextTick()
+  expect(byLabel('本张完成后停止').props.disabled).toBe(true)
+  finish(candidate)
+  await pending
+  await nextTick()
+  expect(generateCandidate).toHaveBeenCalledOnce()
+  expect(nodes().some(node => node.props['aria-label'] === '停止后续生成')).toBe(false)
+  expect(find(node => node.tagName === 'BUTTON' && text(node).startsWith('生成剩余')).props.class).toContain('image-action')
+})
+
+it('displays and copies tags with one hash prefix while keeping them editable', async () => {
+  const store = useGeneratorStore()
+  store.setContent(['Title'], 'Body', ['中文', '#旅行', '##美食'])
+  const writeText = vi.fn().mockResolvedValue(undefined)
+  vi.stubGlobal('navigator', { clipboard: { writeText } })
+  await mount('/workspace/copy')
+  expect(byId('copy-tags').value).toBe('#中文 #旅行 #美食')
+  await byLabel('复制全部标签').props.onClick()
+  expect(writeText).toHaveBeenLastCalledWith('#中文 #旅行 #美食')
+  byId('copy-tags').props['onUpdate:modelValue']('#春日 ##出行 普通标签 #')
+  await nextTick()
+  expect(store.content.tags).toEqual(['春日', '出行', '普通标签'])
+  expect(byId('copy-tags').value).toBe('#春日 #出行 #普通标签')
+  await byLabel('复制全部标签').props.onClick()
+  expect(writeText).toHaveBeenLastCalledWith('#春日 #出行 #普通标签')
+  byId('copy-tags').props['onUpdate:modelValue']('')
+  await nextTick()
+  expect(byLabel('复制全部标签').props.disabled).toBe(true)
+})
+
 it('selects a style without saving or generating until the user acts', async () => {
   await mount('/workspace')
   expect(byId('workspace-style').tagName).toBe('SELECT')
   await vi.waitFor(() => expect(byId('workspace-style').props.disabled).toBe(false))
   byId('workspace-style').props.onChange({ target: { value: 'comic' } })
   await nextTick()
-  byId('workspace-style-notes').props['onUpdate:modelValue']('Blue-green ink')
-  await nextTick()
-  expect(useGeneratorStore().imageStyle).toMatchObject({ preset: 'comic', notes: 'Blue-green ink' })
-  expect(nodes().some(node => node.tagName === 'IMG' && node.props.src === '/assets/styles/comic.png')).toBe(true)
+  expect(useGeneratorStore().imageStyle).toMatchObject({ preset: 'comic', notes: '' })
   expect(createHistory).not.toHaveBeenCalled()
   expect(updateHistory).not.toHaveBeenCalled()
   await button('保存').props.onClick()
   expect(updateHistory).toHaveBeenCalledWith('record', expect.objectContaining({
-    image_style: { preset: 'comic', notes: 'Blue-green ink' },
+    image_style: { preset: 'comic', notes: '' },
   }))
+})
+
+it.each(['/workspace', '/workspace/copy'])('does not render removed audit panels on %s', async path => {
+  await mount(path)
+  expect(text(root)).not.toContain('文案与图片一致性')
+  expect(text(root)).not.toContain('本次生效设置')
+  expect(text(root)).not.toContain('开始检查')
 })
 
 it('uses one candidate preview and reloads a broken image without generating again', async () => {
@@ -180,14 +291,14 @@ it('uses one candidate preview and reloads a broken image without generating aga
   expect(generateCandidate).not.toHaveBeenCalled()
 })
 
-it('flags copy after page edits and retains the text until explicit regeneration', async () => {
+it('retains copy after page edits without showing a consistency reminder', async () => {
   const store = useGeneratorStore()
   store.content.source = { topic: store.topic, outline: 'Cover\n\n<page>\n\nSecond page' }
   await mount('/workspace/copy')
   expect(text(root)).not.toContain('页面内容已变化')
   store.updatePage(0, 'Changed page')
   await nextTick()
-  expect(text(root)).toContain('页面内容已变化')
+  expect(text(root)).not.toContain('页面内容已变化')
   expect(store.content.copywriting).toBe('Body')
   store.updatePage(0, 'Cover')
   await nextTick()
@@ -284,6 +395,26 @@ it('renders only image controls on the image page and only text controls on the 
   expect(nodes().filter(node => node.tagName === 'BUTTON' && text(node) === '生成文案')).toHaveLength(1)
 })
 
+it('keeps empty copy sections distinct and places generation before parameters', async () => {
+  await mount('/workspace/copy')
+  const store = useGeneratorStore()
+  store.content.titles = []
+  store.content.copywriting = ''
+  store.content.tags = []
+  store.content.status = 'idle'
+  await nextTick()
+  expect(text(byLabel('文案制作'))).toContain('待生成标题')
+  expect(byId('copy-body').props.placeholder).toBe('待生成正文')
+  expect(byId('copy-tags').props.placeholder).toBe('待生成标签')
+  expect(byId('copy-body-heading')).toBeDefined()
+  expect(byId('copy-tags-heading')).toBeDefined()
+  const settings = nodes(byLabel('文案制作设置'))
+  const generateIndex = settings.findIndex(node => node.tagName === 'BUTTON' && text(node) === '生成文案')
+  const parametersIndex = settings.findIndex(node => node.props['aria-label'] === '生成设置')
+  expect(generateIndex).toBeGreaterThanOrEqual(0)
+  expect(parametersIndex).toBeGreaterThan(generateIndex)
+})
+
 it('keeps selected page, unsaved copy, models and live task ownership across routes', async () => {
   await mount('/workspace')
   const studio = vi.mocked(useStudio).mock.results[0].value as ReturnType<typeof useStudio>
@@ -303,8 +434,9 @@ it('keeps selected page, unsaved copy, models and live task ownership across rou
   await router.push('/workspace')
   await nextTick()
   expect(byId('page-content').props.value).toBe('Unsaved page')
-  expect(find(node => node.tagName === 'BUTTON' && text(node).startsWith('生成剩余')).props.disabled).toBe(true)
+  expect(nodes().some(node => node.tagName === 'BUTTON' && text(node).startsWith('生成剩余'))).toBe(false)
   expect(button('取消文案生成').props.disabled).toBe(false)
+  expect(button('取消文案生成').props.class).toContain('image-action')
   expect(session.busy).toBe(true)
   expect(session.replaceDraft()).toBe(false)
   await studio.run('images')
@@ -416,6 +548,28 @@ it('returns from another module to the copy page through the actual main navigat
   await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/workspace/copy'))
   expect(byId('copy-body').value).toBe('Body')
   expect(vi.mocked(useStudio)).toHaveBeenCalledOnce()
+})
+
+it.each(['/workspace', '/workspace/copy'])('preserves the draft on back and continues without regeneration from %s', async path => {
+  const store = useGeneratorStore()
+  store.recordId = 'record'
+  store.taskId = 'task'
+  store.images = [{ index: 0, url: '/synthetic.png', status: 'done' }]
+  await mount(path)
+  const snapshot = JSON.stringify({ outline: store.outline, images: store.images, content: store.content })
+  const revision = useStudioSession().revision
+  byLabel('返回创作设置').props.onClick()
+  await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/'))
+  expect(useStudioSession().revision).toBe(revision)
+  expect(store.recordId).toBe('record')
+  expect(store.taskId).toBe('task')
+  expect(JSON.stringify({ outline: store.outline, images: store.images, content: store.content })).toBe(snapshot)
+  expect(button('继续图文制作').props.disabled).toBe(false)
+  await button('继续图文制作').props.onClick()
+  await vi.waitFor(() => expect(router.currentRoute.value.path).toBe(path))
+  expect(JSON.stringify({ outline: store.outline, images: store.images, content: store.content })).toBe(snapshot)
+  expect(generateCandidate).not.toHaveBeenCalled()
+  expect(generateContent).not.toHaveBeenCalled()
 })
 
 it.each(['/workspace', '/workspace/copy'])('returns from the actual preview to its originating workspace %s', async path => {

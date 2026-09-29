@@ -8,16 +8,16 @@ echo ============================================
 :: Install dependencies if node_modules missing
 if not exist "node_modules" (
     echo [INFO] node_modules not found, installing dependencies...
-    call npm install
+    call pnpm install --frozen-lockfile
     if errorlevel 1 (
-        echo [ERROR] npm install failed.
+        echo [ERROR] pnpm install failed. Install pnpm 10.19.0 first.
         pause
         exit /b 1
     )
 )
 
 echo [INFO] Building frontend...
-call npm run build
+call pnpm build
 set EXIT_CODE=%errorlevel%
 
 echo.

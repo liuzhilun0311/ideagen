@@ -4,7 +4,7 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import axios from 'axios'
 import {
   createPreviewFixtures, previewCopy as copy, previewDelay, previewImageUrl,
-  previewPages as pages, previewPhotos as photos, previewRecord as record, previewUser,
+  previewPages as pages, previewPhotos as photos, previewRecord as record, previewUser, previewReader,
 } from './fixtures'
 import '../../src/assets/css/variables.css'
 import '../../src/assets/css/base.css'
@@ -26,9 +26,24 @@ const previewStorage: Storage = {
 }
 Object.defineProperty(window, 'localStorage', { value: previewStorage, configurable: true })
 memory.set('ideagen_token', 'local-preview-not-a-real-token')
-memory.set('ideagen_user', JSON.stringify(previewUser))
+const previewParameters = new URLSearchParams(location.search)
+memory.set('ideagen_user', JSON.stringify(previewParameters.get('reader') === '1' ? previewReader : previewUser))
+// Keep reference-image persistence isolated from real browser drafts as well.
+const { referenceDraftStorage } = await import('../../src/features/referenceDraftStorage')
+const referenceMemory = new Map<string, import('../../src/features/referenceDraftStorage').ReferenceDraft>()
+referenceDraftStorage.read = async owner => referenceMemory.get(owner)
+referenceDraftStorage.write = async (owner, value) => { referenceMemory.set(owner, value) }
 
-const fixtures = createPreviewFixtures(previewDelay(location.search))
+const fixtures = createPreviewFixtures(previewDelay(location.search), {
+  candidateDelay: previewParameters.has('candidate-delay')
+    ? previewDelay(`delay=${previewParameters.get('candidate-delay')}`) : 0,
+  processingDelay: 1800,
+  failIndices: previewParameters.get('processing') === 'partial-failure' ? [1] : [],
+  reader: previewParameters.get('reader') === '1',
+  shared: previewParameters.get('shared') === '1',
+  revokeAfterMs: previewParameters.get('revoke') === '1' ? 5000 : undefined,
+  missingWork: previewParameters.get('missing') === '1',
+})
 axios.defaults.adapter = fixtures.adapter
 
 // Intercept before assigning a URL so <img> never requests the real image API.
@@ -68,11 +83,13 @@ async function mount() {
   const pinia = createPinia()
   const store = useGeneratorStore(pinia)
   const screen = new URLSearchParams(location.search).get('screen') || 'home'
-  if (['workspace', 'workspace-images', 'result'].includes(screen)) {
+  if (['workspace', 'workspace-images', 'workspace-copy', 'result'].includes(screen)) {
     store.topic = record.title
     store.setOutline(record.outline.raw, pages.map(page => ({ ...page })))
+    store.outline.growth_recommendation = record.outline.growth_recommendation
     store.setRecordId(record.id)
     store.setEntrySource('history')
+    if (screen === 'workspace-copy') store.setContent([...copy.titles], copy.copywriting, [...copy.tags])
     if (screen === 'result' || screen === 'workspace-images') {
       store.startGeneration()
       photos.forEach((url, index) => store.updateProgress(index, 'done', url))
@@ -83,7 +100,7 @@ async function mount() {
   const router = createRouter({ history: createMemoryHistory(), routes: liveRouter.options.routes })
   const paths: Record<string, string> = {
     home: '/', login: '/login', result: '/result', workspace: '/workspace',
-    'workspace-images': '/workspace', history: '/history', works: '/history',
+    'workspace-images': '/workspace', 'workspace-copy': '/workspace/copy', history: '/history', works: '/history',
     prompts: '/prompts', settings: '/settings', models: '/settings', users: '/users',
   }
   const path = paths[screen] || '/'

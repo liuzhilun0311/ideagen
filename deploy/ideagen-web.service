@@ -1,0 +1,19 @@
+[Unit]
+Description=IdeaGen Web
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ideagen
+Group=ideagen
+WorkingDirectory=/opt/ideagen
+EnvironmentFile=/opt/ideagen/.env
+ExecStart=/opt/ideagen/.venv/bin/python /opt/ideagen/deploy/start.py web
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

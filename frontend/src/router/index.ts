@@ -1,14 +1,10 @@
-// 注意：如果出现 vue-router 类型声明文件找不到的错误，请在 tsconfig.json 中将 moduleResolution 设置为 "bundler"
-// 并确保已安装 vue-router@3（npm install vue-router@4）
+// Vue Router 4 uses the application's bundler module resolution and typed route components.
 import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from '../views/HomeView.vue'
 import WorkspaceView from '../views/WorkspaceView.vue'
 import ResultView from '../views/ResultView.vue'
 import HistoryView from '../views/HistoryView.vue'
-import SettingsView from '../views/SettingsView.vue'
-import PromptManageView from '../views/PromptManageView.vue'
 import LoginView from '../views/LoginView.vue'
-import UsersView from '../views/UsersView.vue'
 import { getToken, getUser } from '../api/token'
 import { useGeneratorStore } from '../stores/generator'
 
@@ -42,6 +38,11 @@ const router = createRouter({
       component: WorkspaceView
     },
     {
+      path: '/workspace/copy',
+      name: 'workspace-copy',
+      component: WorkspaceView
+    },
+    {
       path: '/result',
       name: 'result',
       component: ResultView
@@ -59,17 +60,22 @@ const router = createRouter({
     {
       path: '/settings',
       name: 'settings',
-      component: SettingsView
+      component: () => import('../views/SettingsView.vue')
     },
     {
       path: '/prompts',
       name: 'prompts',
-      component: PromptManageView
+      component: () => import('../views/PromptManageView.vue')
+    },
+    {
+      path: '/reference-assets',
+      name: 'reference-assets',
+      component: () => import('../views/ReferenceAssetsView.vue')
     },
     {
       path: '/users',
       name: 'users',
-      component: UsersView,
+      component: () => import('../views/UsersView.vue'),
       meta: { admin: true }
     }
   ]
@@ -84,7 +90,7 @@ router.beforeEach((to) => {
   if (to.meta.admin && !getUser()?.is_admin) {
     return { name: 'home' }
   }
-  if (to.name === 'workspace' && !useGeneratorStore().outline.pages.length) return { name: 'home' }
+  if ((to.name === 'workspace' || to.name === 'workspace-copy') && !useGeneratorStore().outline.pages.length) return { name: 'home' }
   return true
 })
 

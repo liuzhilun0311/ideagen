@@ -54,7 +54,7 @@ it('passes actual SSE chunks through the API client and preserves partial result
   expect(JSON.parse(fetchMock.mock.calls[0][1].body).record_id).toBe('record')
   expect(useGeneratorStore().progress).toEqual({ current: 1, total: 2, status: 'error' })
   expect(useGeneratorStore().taskId).toBe('task')
-  expect(report).toHaveBeenLastCalledWith(null)
+  expect(report).toHaveBeenLastCalledWith(expect.objectContaining({ detail: 'provider failed' }))
 })
 
 it('recognizes EOF without finish using the real API reader', async () => {

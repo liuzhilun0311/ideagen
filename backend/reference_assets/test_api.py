@@ -58,6 +58,43 @@ class ReferenceAssetApiTests(TestCase):
         self.assertEqual(analysis.owner_id, self.user.id)
         self.assertEqual(response.json()["analysis"]["content"]["summary"], "咖啡")
 
+    @patch("reference_assets.views.analyze_image")
+    def test_prompt_creation_attaches_reference_image_to_layout_and_style(self, analyze_image):
+        analyze_image.return_value = {
+            "content": {"summary": "咖啡"},
+            "layout": {"prompt_text": "居中布局"},
+            "visual_style": {"prompt_text": "柔和手绘"},
+            "rewritten_content": "改写内容",
+        }
+        analyzed = self.client.post(
+            "/api/image-analysis",
+            {"image": png_upload(), "save_source": "1"},
+            **self.auth(),
+        )
+        analysis_id = analyzed.json()["analysis"]["id"]
+
+        response = self.client.post(
+            "/api/prompt-center/from-analysis",
+            data=json.dumps({
+                "analysis_id": analysis_id,
+                "parts": ["layout", "visual_style"],
+                "names": {"layout": "参考布局", "visual_style": "参考风格"},
+                "drafts": {},
+            }),
+            content_type="application/json",
+            **self.auth(),
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        entries = response.json()["entries"]
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0]["metadata"]["reference_asset_id"], entries[1]["metadata"]["reference_asset_id"])
+        asset = ReferenceAsset.objects.get()
+        self.assertEqual(entries[0]["metadata"]["reference_asset_id"], str(asset.pk))
+        image = self.client.get(f"/api/reference-assets/images/{asset.pk}", **self.auth())
+        self.assertEqual(image.status_code, 200)
+        self.assertEqual(image["Content-Type"], "image/png")
+
     def test_other_user_cannot_read_analysis(self):
         analysis = ImageAnalysis.objects.create(owner=self.user, content={"summary": "private"})
 

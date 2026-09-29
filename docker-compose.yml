@@ -1,21 +1,50 @@
+x-runtime: &runtime
+  build: .
+  image: ideagen-django:local
+  user: "${IDEAGEN_UID:-10001}:${IDEAGEN_GID:-10001}"
+  init: true
+  environment:
+    DJANGO_DEBUG: "False"
+    DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in .env}
+    DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:?Set DJANGO_ALLOWED_HOSTS in .env}
+    ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+  volumes:
+    - ./history:/app/history
+    - ./output:/app/output
+    - ./user_configs:/app/user_configs
+    - ./data:/app/data
+    - type: bind
+      source: ./image_providers.yaml
+      target: /app/image_providers.yaml
+      bind:
+        create_host_path: false
+    - type: bind
+      source: ./text_providers.yaml
+      target: /app/text_providers.yaml
+      bind:
+        create_host_path: false
+  restart: unless-stopped
+  stop_grace_period: 45s
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
 services:
   ideagen:
-    build: .
-    image: ideagen-django:latest
-    container_name: ideagen-django
+    <<: *runtime
     ports:
-      - "12398:12398"
-    environment:
-      # 初始管理员密码（首次创建 admin 账号时生效；后续改密码请用管理界面）
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
-      DJANGO_DEBUG: "False"
-    volumes:
-      # 持久化数据（图片、历史记录、输出）
-      - ./history:/app/history
-      - ./output:/app/output
-      - ./user_configs:/app/user_configs
-      - ./data:/app/data
-      # 服务商配置（宿主机编辑后生效，含 API Key；模板见项目根 *.yaml.example）
-      - ./image_providers.yaml:/app/image_providers.yaml
-      - ./text_providers.yaml:/app/text_providers.yaml
-    restart: unless-stopped
+      - "${BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-12398}:12398"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:12398/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+  image-worker:
+    <<: *runtime
+    command: ["worker"]
+    depends_on:
+      ideagen:
+        condition: service_healthy

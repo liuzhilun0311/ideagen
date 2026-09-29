@@ -2,9 +2,19 @@
 import { computed, onUnmounted, ref } from 'vue'
 import { Check, Copy, FileText, Hash, List } from 'lucide-vue-next'
 import { useGeneratorStore } from '../../stores/generator'
+import { selectedTitle, selectedTitleIndex } from '../../utils/publicationContent'
 
+const props = defineProps<{ selectedOnly?: boolean }>()
 const store = useGeneratorStore()
-const content = computed(() => store.content)
+const content = computed(() => {
+  if (!props.selectedOnly) return store.content
+  return {
+    ...store.content,
+    titles: store.content.titles.length
+      ? [selectedTitle(store.content.titles, store.content.selectedTitleIndex)] : [],
+    selectedTitleIndex: 0,
+  }
+})
 const hasContent = computed(() => content.value.titles.length || content.value.copywriting || content.value.tags.length)
 const copiedKey = ref('')
 const copyError = ref('')
@@ -63,7 +73,7 @@ const tagsText = computed(() => content.value.tags.map(t => `#${t}`).join(' '))
       <section class="content-section" aria-label="标题">
         <header>
           <h2><List :size="20" aria-hidden="true" />标题</h2>
-          <button type="button" class="icon-button" title="复制全部标题" aria-label="复制全部标题" :disabled="copying || !content.titles.length" @click="copyText(content.titles.join('\n'), 'titles', '标题')">
+          <button type="button" class="icon-button" :title="selectedOnly ? '复制标题' : '复制全部标题'" :aria-label="selectedOnly ? '复制标题' : '复制全部标题'" :disabled="copying || !content.titles.length" @click="copyText(content.titles.join('\n'), 'titles', '标题')">
             <Check v-if="copiedKey === 'titles'" :size="18" aria-hidden="true" /><Copy v-else :size="18" aria-hidden="true" />
           </button>
         </header>
@@ -71,7 +81,7 @@ const tagsText = computed(() => content.value.tags.map(t => `#${t}`).join(' '))
         <ol v-else class="titles-list">
           <li v-for="(title, index) in content.titles" :key="index">
             <span class="title-number">{{ index + 1 }}</span>
-            <span class="title-text">{{ title }}</span>
+            <span class="title-text">{{ title }}<small v-if="index === selectedTitleIndex(content.titles, content.selectedTitleIndex)" class="adopted-title">已选</small></span>
             <button type="button" class="icon-button" :title="`复制标题 ${index + 1}`" :aria-label="`复制标题 ${index + 1}`" :disabled="copying || !title" @click="copyText(title, `title-${index}`, `标题 ${index + 1}`)">
               <Check v-if="copiedKey === `title-${index}`" :size="18" aria-hidden="true" /><Copy v-else :size="18" aria-hidden="true" />
             </button>
@@ -127,6 +137,7 @@ p { font-size: 16px; line-height: 1.8; margin: 0; }
 .titles-list li { display: grid; grid-template-columns: 24px minmax(0, 1fr) 44px; gap: 10px; align-items: start; padding: 10px 0; }
 .title-number, .title-text { font-size: 16px; line-height: 1.75; padding-top: 8px; }
 .copywriting { white-space: pre-wrap; }
+.adopted-title { color:#087967; font-size:12px; margin-left:8px; white-space:nowrap; }
 .tags-list { display: flex; flex-wrap: wrap; gap: 8px 24px; }
 .tags-list li { display: flex; align-items: center; gap: 8px; max-width: 100%; min-width: 0; color: #315ee8; font-size: 16px; line-height: 1.65; }
 .tags-list li > span { min-width: 0; overflow-wrap: anywhere; }

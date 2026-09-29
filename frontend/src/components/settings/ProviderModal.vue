@@ -35,7 +35,7 @@
               @click="local.name = ''"
             >×</button>
           </div>
-          <span class="form-hint">唯一标识，用于区分不同服务商</span>
+          <span class="form-hint">服务商名称</span>
         </div>
 
         <!-- 类型选择 -->
@@ -117,15 +117,29 @@
           </div>
         </div>
 
+        <div class="form-group" v-if="showEndpointType">
+          <label for="text-api-protocol">API 协议</label>
+          <select
+            id="text-api-protocol"
+            class="form-select"
+            v-model="local.api_protocol"
+            @change="changeProtocol"
+          >
+            <option value="chat_completions">Chat Completions</option>
+            <option value="responses">Responses</option>
+          </select>
+        </div>
+
         <!-- 端点路径（仅 OpenAI 兼容接口） -->
         <div class="form-group" v-if="showEndpointType">
-          <label>API 端点路径</label>
+          <label for="text-api-endpoint">API 端点路径{{ customEndpoint ? '（自定义路径）' : '' }}</label>
           <div class="input-wrap">
             <input
               type="text"
+              id="text-api-endpoint"
               class="form-input"
               v-model="local.endpoint_type"
-              placeholder="例如: /v1/chat/completions"
+              :placeholder="defaultEndpoint"
               autocomplete="off"
             />
             <button
@@ -137,7 +151,7 @@
             >×</button>
           </div>
           <span class="form-hint">
-            默认端点：/v1/chat/completions（大多数 OpenAI 兼容 API 使用此端点）
+            默认端点：{{ defaultEndpoint }}
           </span>
         </div>
 
@@ -183,6 +197,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { TextProviderForm } from '../../composables/useProviderForm'
+import { defaultTextEndpoint, endpointForTextProtocol, isCustomTextEndpoint } from '../../utils/textProtocol'
 
 /**
  * 服务商编辑/添加弹窗组件
@@ -220,6 +235,12 @@ const emit = defineEmits<{
 
 // 本地编辑副本：表单直接 v-model 到本地，避免受控输入在快速操作（如全选替换）时的异常
 const local = ref<TextProviderForm>({ ...props.formData })
+const defaultEndpoint = computed(() => defaultTextEndpoint(local.value.api_protocol))
+const customEndpoint = computed(() => isCustomTextEndpoint(local.value.endpoint_type))
+
+function changeProtocol() {
+  local.value.endpoint_type = endpointForTextProtocol(local.value.endpoint_type, local.value.api_protocol)
+}
 
 // 父级传入的数据变化时同步
 watch(
@@ -294,7 +315,7 @@ const previewUrl = computed(() => {
   switch (local.value.type) {
     case 'openai_compatible': {
       // 使用用户自定义的端点路径
-      let endpoint = local.value.endpoint_type || '/v1/chat/completions'
+      let endpoint = local.value.endpoint_type || defaultEndpoint.value
       if (!endpoint.startsWith('/')) {
         endpoint = '/' + endpoint
       }

@@ -66,6 +66,18 @@ it('reports record failure without starting images and permits another attempt',
   expect(generateImagesPost).toHaveBeenCalledOnce()
 })
 
+it('sends a style snapshot and retains the style used for generation', async () => {
+  useGeneratorStore().imageStyle = { preset: 'comic', notes: 'Blue' }
+  const { args, stream, pending } = await startPending()
+  expect(args[15]).toEqual({ preset: 'comic', notes: 'Blue' })
+  expect(useGeneratorStore().imageStyle.applied).toEqual({ preset: 'comic', notes: 'Blue' })
+  useGeneratorStore().imageStyle.notes = 'Changed'
+  expect(args[15]).toEqual({ preset: 'comic', notes: 'Blue' })
+  finish(args)
+  stream.resolve()
+  await pending
+})
+
 it('passes the returned record ID and preserves API argument positions', async () => {
   const store = useGeneratorStore()
   store.topic = 'topic'
@@ -153,7 +165,7 @@ it('does not report success when every image arrived but finish is missing', asy
   }))
 })
 
-it('keeps page failures local and finishes with partial success', async () => {
+it('keeps partial results and exposes page failure diagnostics', async () => {
   const report = vi.fn()
   vi.mocked(generateImagesPost).mockImplementation(async (...args) => {
     args[5]({ index: 1, status: 'error', error: 'page failed' })
@@ -165,8 +177,9 @@ it('keeps page failures local and finishes with partial success', async () => {
   expect(useGeneratorStore().progress).toEqual({ current: 1, total: 2, status: 'error' })
   expect(useGeneratorStore().images[1]).toMatchObject({ status: 'error', retryable: true })
   expect(useGeneratorStore().taskId).toBe('partial')
-  expect(report).toHaveBeenCalledTimes(1)
-  expect(report).toHaveBeenLastCalledWith(null)
+  expect(report).toHaveBeenCalledTimes(2)
+  expect(report).toHaveBeenLastCalledWith(expect.objectContaining({ detail: 'page failed' }))
+  expect(useGeneratorStore().images[1].error).toContain('page failed')
 })
 
 it.each(['callback', 'rejection'] as const)('settles stream %s errors once with partial results', async mode => {
